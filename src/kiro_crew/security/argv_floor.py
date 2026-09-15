@@ -674,9 +674,8 @@ def _python_reads_stdin(later_tokens: list[str]) -> bool:
             # had its stdin program go unscanned. Bash runs every one of these.
             redirect_target, position = redirect
             # A chain of output redirects glued into ONE word (`>a>a>a...`) is walked
-            # here, in place. Re-injecting each remainder into the token stream instead
-            # re-sliced the word per operator, which is quadratic in its length on a
-            # floor that runs for every command.
+            # here, in place, to stay linear in the word length on a floor that runs
+            # for every command.
             while position < len(redirect_word):
                 further = _shell_normalizer._output_redirect_scan(redirect_word, position)
                 if further is None:
@@ -1525,8 +1524,7 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
         return False
     for tokens in _self_token_frames(_shell_join_continuations(text_lower)):
         programs = _argv_programs(tokens)
-        # Once per FRAME, not once per token: this is the loop whose per-token scan
-        # made the floor quadratic.
+        # Once per FRAME, not once per token, to keep the floor linear in token count.
         scan = _self_module_flag_scan(tokens)
         for i in range(len(tokens)):
             prog_idx = _self_program_index(tokens, i, scan)
@@ -1548,6 +1546,11 @@ def _is_self_restart(text_lower: str) -> bool:
 def _is_self_update(text_lower: str) -> bool:
     """``kirocrew update`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("update",))
+
+
+def _is_self_file_delivery(text_lower: str) -> bool:
+    """``kirocrew file-delivery`` behind any shell dressing of interposed flags."""
+    return _matches_self_subcommand(text_lower, ("file-delivery",))
 
 
 def _is_self_gateway_restart(text_lower: str) -> bool:
