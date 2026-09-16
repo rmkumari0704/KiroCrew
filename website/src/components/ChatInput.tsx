@@ -1166,7 +1166,7 @@ function ChatInput({
     setApprovalSubmitting(true)
     setApprovalNotice(null)
     const finish = () => {
-      dispatch(resolveByApprovalId({ id: approvalId, decision }))
+      dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision }))
       setApprovalSubmitting(false)
       // B2: tally manual one-shot approvals per slot. Only 'approved' counts —
       // a trust grant already reduces future prompts, and a rejection is not
@@ -1191,7 +1191,7 @@ function ChatInput({
       // orphan: leaving it up makes every button look broken, so clear it and
       // say why instead of only logging to the console.
       if (err instanceof ApiError && err.status === 404) {
-        dispatch(resolveByApprovalId({ id: approvalId, decision: 'stale' }))
+        dispatch(resolveByApprovalId({ id: approvalId, slot: activeSlot || undefined, decision: 'stale' }))
         // Say WHOSE turn expired. Unattended sources deny-fast on a short
         // window (minutes), so by the time a human reads the card the job has
         // usually already been denied and moved on — "expired" alone reads as
@@ -1247,14 +1247,11 @@ function ChatInput({
     if (!a.approval_id || a.approving) return
     dispatch(markSubagentApproving({ id: a.id, approving: true }))
     api.resolveApproval(a.approval_id, action).then(() => {
-      // Terminate a rejected card here, because nothing else will. The backend's
-      // `approval_resolved` frame carries only {id, approved} — no slot — so the
-      // useWebSocket handler that would dispatch sseSubagentDone is skipped
-      // (it requires data.slot to avoid misattributing cards across sessions).
-      // An APPROVED spawn still converges: it runs and emits its own
-      // spawn/chunk/done stream, each frame carrying a slot. A REJECTED spawn
-      // never runs and emits nothing further, so without this the card stays
-      // pending+approving and the banner sticks on "Resolving…" indefinitely.
+      // Terminate a rejected card optimistically so the banner does not depend
+      // on a WebSocket round trip. The slot-scoped `approval_resolved` frame
+      // converges this state idempotently when it arrives. An approved spawn
+      // also converges through its spawn/chunk/done stream, while a rejected
+      // spawn emits no lifecycle events beyond the resolution frame.
       if (action === 'reject' && slotId) {
         dispatch(sseSubagentDone({ slot: slotId, id: a.id, elapsed: 0, error: 'rejected' }))
       }

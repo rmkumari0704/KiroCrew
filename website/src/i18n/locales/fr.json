@@ -8771,6 +8771,7 @@
       "a_task_needs_your_decision": "Une tâche nécessite votre décision",
       "approval_required": "Approbation requise",
       "tool_approval": "Approbation d’outil : {{name}}",
+      "approval_wait_expired": "L’attente d’approbation a expiré, la demande a donc été refusée.",
       "unknown": "Inconnu"
     }
   },

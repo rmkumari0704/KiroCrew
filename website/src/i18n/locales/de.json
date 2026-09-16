@@ -8655,6 +8655,7 @@
       "a_task_needs_your_decision": "Eine Aufgabe braucht deine Entscheidung",
       "approval_required": "Genehmigung erforderlich",
       "tool_approval": "Werkzeuggenehmigung: {{name}}",
+      "approval_wait_expired": "Die Wartezeit auf die Genehmigung ist abgelaufen, deshalb wurde die Anfrage abgelehnt.",
       "unknown": "Unbekannt"
     }
   },
