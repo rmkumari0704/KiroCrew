@@ -247,6 +247,14 @@ def _collect_parent_runtime_kwargs(
         value = getattr(client, attribute, None)
         if value is not None:
             kwargs[key] = value
+    # The MCP Tool Search choice rides the runtime constructor on a wire-settings
+    # host, so a companion runtime built without it would run with the setting
+    # left to the host's default rather than the explicit value the parent sent.
+    resolve_tool_search = getattr(provider, "_tool_search_settings", None)
+    if callable(resolve_tool_search):
+        tool_search = resolve_tool_search()
+        if tool_search is not None:
+            kwargs["tool_search"] = tool_search
     return kwargs
 
 

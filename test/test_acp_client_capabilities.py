@@ -60,7 +60,10 @@ def test_the_shared_process_transport_reads_capabilities_from_its_host() -> None
     """
     src = Path(__file__).resolve().parents[1] / "src/kiro_crew/acp/runtime.py"
     text = src.read_text(encoding="utf-8")
-    assert '"clientCapabilities": self._harness.client_capabilities' in text
+    # The declaration is read from the harness; the runtime only fills the
+    # settings channel a host declares (``client_meta_settings``) before sending.
+    assert "base = self._harness.client_capabilities" in text
+    assert '"clientCapabilities": client_capabilities' in text
     assert "ACP_CLIENT_CAPABILITIES" not in text
     assert "KAS_CLIENT_CAPABILITIES" not in text
 
