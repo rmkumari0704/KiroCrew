@@ -64,6 +64,7 @@ from typing import Dict, FrozenSet, Protocol, Tuple, runtime_checkable
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -475,6 +476,53 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # Excluded deliberately: it signs in through its own credential file, so a
         # ``kiro-cli logout`` says nothing about whether a running opencode session
         # is still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_GOOSE,
+        # Verified on disk rather than read off documentation: the harness's own
+        # ``goose info`` reports its config directory, and pointed at a scratch
+        # ``XDG_CONFIG_HOME`` it reports and populates the tree there. This leaf is
+        # the FILE-BASED half of a two-store design: the harness keeps provider
+        # secrets in the OS keyring by default and writes this file instead when
+        # ``GOOSE_DISABLE_KEYRING`` selects file storage, which the harness itself
+        # describes as plain text. The keyring half is fenced by the OS rather than
+        # by a path, so a floor can only name this one -- which is the half an
+        # agent's file tools could otherwise read.
+        credential_leaves=(".config/goose/secrets.yaml",),
+        # Only the CONFIG home, because on this harness that IS where the secret
+        # store lives -- the inverse of the opencode declaration above, whose token
+        # sits under the data home and whose config home is therefore deliberately
+        # absent. The data and state homes are excluded here for that same reason:
+        # they hold this harness's session database and logs, and anchoring a
+        # credential on them would fence files that carry no secret.
+        home_override_env_vars=("XDG_CONFIG_HOME",),
+        # ``XDG_CONFIG_HOME`` replaces ``.config``, not the leaf's parent, so the
+        # relocated file keeps both remaining segments.
+        override_relative_leaves=("goose/secrets.yaml",),
+        # The one leaf the mask must spare: this harness is enforced, so the mask
+        # denies it the whole credential floor, and it resolves its own provider
+        # secret from this file. The read gate still refuses the same leaf to the
+        # AGENT's file tools, so the two controls cover different readers.
+        adapter_own_leaves=(".config/goose/secrets.yaml",),
+        # Action only, and no state, because for this harness there may be no state
+        # to assert: a model served locally on the operator's own machine needs no
+        # provider secret at all.
+        sign_in_remedy=(
+            "goose signs in on its own — run goose configure in a terminal to name a "
+            "provider and store its key. A model served locally on this machine "
+            "needs no key: name it as the provider instead. Neither is checked here: "
+            "the harness reads them."
+        ),
+        signed_out_message=(
+            "goose has no provider configured. Run `goose configure` in your terminal "
+            "to set one up, or configure a locally served model, then start a new "
+            "chat."
+        ),
+        # Excluded deliberately: it resolves its own provider secret, so a
+        # ``kiro-cli logout`` says nothing about whether a running goose session can
+        # still reach its model.
         host_logout_retires_children=False,
         entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
     ),

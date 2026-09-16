@@ -60,6 +60,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("user_display", r"\[CURRENT USER\]"),
     ("user_profile", r"\[USER PROFILE\]"),
     ("ui_language", r"\[UI LANGUAGE\]"),
+    ("response_preferences", r"\[RESPONSE PREFERENCES"),
     ("channel_persona", r"\[CHANNEL\]"),
     ("incognito", r"\[INCOGNITO SESSION\]"),
     ("temporary_session", r"\[TEMPORARY SESSION\]"),
@@ -121,6 +122,7 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("theme_persona", r"\[END THEME PERSONA\]"),
         ("user_profile", r"\[End of user profile\]"),
         ("ui_language", r"\[End of UI language\]"),
+        ("response_preferences", r"\[END RESPONSE PREFERENCES\]"),
         ("cancelled_turn", r"\[END PREVIOUS TURN\]"),
     )
 }

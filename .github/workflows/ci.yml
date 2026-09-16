@@ -485,6 +485,15 @@ jobs:
           python3 scripts/check_subprocess_encoding.py --test
           python3 scripts/check_subprocess_encoding.py
 
+      # A committed ACP frame fixture carries what the WIRE carried. The class that
+      # gets through a credential scrub is an ENUMERATION -- a provider catalog, a
+      # command inventory -- because it reads as product data while describing what
+      # the recording host HAS. Today's leaks are carried in the baseline as
+      # pre-existing and it is shrink-only, per file AND per marker class, so a new
+      # fixture cannot inherit an exemption.
+      - name: Check ACP frame fixtures for host data (gate, baselined)
+        run: python3 scripts/check_acp_frame_host_data.py
+
       # Application code must reach the agent backend through kiro_crew.agent_sdk,
       # not by importing kiro_crew.acp (or kiro_crew.providers, which re-exports
       # the same ACP shapes and would otherwise be a laundering channel). Today's

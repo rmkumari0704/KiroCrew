@@ -33,6 +33,7 @@ import pytest
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -171,23 +172,59 @@ def test_membership_is_unchanged_by_the_move() -> None:
     # the two opt-ins are independent, and a deliberate edit this pin forces to be
     # seen.
     assert ACP_BACKENDS_ADVERTISED_MODEL_SELECTION == frozenset(
-        {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+        {
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_OPENCODE,
+            ACP_BACKEND_PI,
+            ACP_BACKEND_GOOSE,
+        }
     )
     assert ACP_BACKENDS_SEED_LOCAL_SETTINGS == frozenset({ACP_BACKEND_CLAUDE})
 
 
 def test_model_registry_namespace_maps_every_known_backend() -> None:
-    """The namespace is a registry index selector, mapped for every backend so a
-    future ADVERTISED_MODEL_SELECTION member already has an entry. The kiro
-    family lives in the ``acp`` namespace; claude uses ``claude_code``; codex has
-    its own, because the same key selects the advertised-model cache bucket and
-    codex's served ids are not kiro's."""
+    """The namespace is a registry index selector, and the same key selects the
+    advertised-model cache bucket. The kiro family lives in the ``acp`` namespace;
+    claude uses ``claude_code``; codex has its own, because codex's served ids are not
+    kiro's."""
     assert model_registry_namespace(ACP_BACKEND_CLAUDE) == "claude_code"
     assert model_registry_namespace(ACP_BACKEND_KIRO) == "acp"
     assert model_registry_namespace(ACP_BACKEND_KAS) == "acp"
     assert model_registry_namespace(ACP_BACKEND_CODEX) == "codex"
     # An unknown/unregistered backend defaults to the kiro namespace, never crashes.
     assert model_registry_namespace("something-new") == "acp"
+
+
+def test_a_harness_that_persists_a_catalog_owns_its_own_namespace() -> None:
+    """A member of ADVERTISED_MODEL_SELECTION must not share the kiro bucket.
+
+    That set is exactly the harnesses whose advertised models are CAPTURED off
+    ``session/new`` and persisted to the cross-session provider-model cache, and this
+    key is the bucket they are persisted into. So a member with no entry of its own
+    falls back to ``acp`` and its catalog replaces kiro-cli's -- the picker then offers
+    kiro-cli whatever the other harness happened to advertise.
+
+    Derived from the SET rather than from a list of ids, which is what the spot-check
+    above cannot do: it named four backends, and a fifth joining the set was invisible
+    to it. Each of these harnesses draws its ids from the operator's own provider
+    configuration, so no two of them may share a bucket either.
+    """
+    kiro_namespace = model_registry_namespace(ACP_BACKEND_KIRO)
+    seen: dict = {}
+    for backend in sorted(ACP_BACKENDS_ADVERTISED_MODEL_SELECTION):
+        namespace = model_registry_namespace(backend)
+        assert namespace != kiro_namespace, (
+            f"{backend!r} persists an advertised catalog but shares the kiro namespace "
+            f"{namespace!r}, so its models overwrite kiro-cli's in the picker -- give it "
+            "its own key in _MODEL_REGISTRY_NAMESPACE_BY_BACKEND"
+        )
+        assert namespace not in seen, (
+            f"{backend!r} and {seen[namespace]!r} both persist advertised catalogs into "
+            f"namespace {namespace!r}, so whichever starts last wins"
+        )
+        seen[namespace] = backend
+    assert seen, "no harness persists an advertised catalog, so this ratchet is vacuous"
 
 
 def test_acp_runtime_is_a_superset_of_session_sharing() -> None:

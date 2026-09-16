@@ -418,3 +418,94 @@ the probe name would otherwise make an absent gate read as present. Expect this
 too: a harness that offers less than the ones before it does not fit a weaker
 version of an existing member, it needs a member that says what is actually
 established.
+
+## Worked example: goose
+
+The run to read for what a MEASUREMENT overturning a written premise looks like, and
+for the difference between a hazard at the start of a session and one at its restore.
+It is in `ACP_BACKENDS_KNOWN` and it IS selectable.
+
+| Stage | State |
+|---|---|
+| 1 vocabulary | Done — `ACP_BACKEND_GOOSE`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_GOOSE`, policy name mapped. |
+| 2 capability sets | Decided for every set. In the session MCP array, won by a ROUND TRIP rather than by an advertisement. Out of steer, both compaction sets, the internal sandbox, member dispatch and session sharing. In NEITHER load-workaround set, because it serves `session/load` and rejects `session/resume` — the exact inverse of the harness onboarded before it. |
+| 3 spawn path | Done — one binary and one subcommand, `goose acp`, resolved override → mise → PATH. No adapter package and no Node floor. The argv also names `--with-builtin developer`, because supplying `mcpServers` REPLACES this harness's configured extensions. |
+| 4 handshake | Done — integer `1`, captured off its own wire. |
+| 5 auth declaration | Done — `own_credential_file`, one leaf (`~/.config/goose/secrets.yaml`), `XDG_CONFIG_HOME` re-anchored, `adapter_own_leaves` non-empty. The CONFIG home rather than the data home, which is the inverse of the sibling single-binary harness's choice and the same rule applied: name the home the secret lives under, and no other. |
+| 6 install probe | Done — `_probe_goose` names `goose` and the harness's own installer, with `restart_required` from the spawn path's own cache. |
+| 7 selectability | **Selectable**, on a routing that is verified rather than declared. |
+| routing | `VERIFIED_SEEDED_SETTINGS`, and the cheapest instance of it: the seed is one environment variable and the read-back is a field on the response that opens the session. |
+| 8 live spill | Reached. A live turn, and a corpus live for ALL SEVEN required classes — the first onboarding here to synthesize nothing, because this harness emitted a `session/request_permission` frame for both a builtin tool and one of Crew's own MCP tools. |
+| verified range | goose **1.50.x** (1.50.1 recorded). Three wire facts of that release, not spec guarantees, each with its own failure direction: the mode read-back (`modes.currentModeId`) and the tool identity channel (`_meta.goose.toolCall`) fail **closed** when absent — refused sessions, refused approvals; the mid-session `current_mode_update` emission the mode tripwire rests on fails **open** — a release that stops emitting it narrows enforcement back to the open/restore read-back with nothing announcing it. All three are pinned by the corpus; re-verify all three, and re-capture the mode move deliberately, before raising the range. A session on a release outside it is named at the handshake (`_note_goose_version`, off `agentInfo.version`), once per process — the one signal before the first prompt that the open-failing fact may not hold. |
+
+Three things this run produced that the checklist did not ask for.
+
+**The first is a premise that measurement overturned.** The prior research on this
+harness recorded that it establishes its asking route only AFTER the session exists,
+leaving an ungated interval at session start, and concluded that Crew must therefore
+withhold its MCP tools rather than create one. Driven against the shipped binary, that
+is not what happens: the mode is read from the child's ENVIRONMENT at spawn and above
+the harness's own config file, so `session/new` returns with
+`modes.currentModeId` already reporting the required mode, before a prompt is sent.
+There is no interval in which the session is live and the route is not. The tools are
+therefore delivered rather than withheld, and the routing joins an existing vocabulary
+member instead of needing a new one. Re-measure an inherited premise before you
+inherit the design it justified — this one cost the previous attempt its whole tool
+surface.
+
+**The second is the hazard that premise was pointing at, in its real place.** The
+environment seed governs a session this harness CREATES. It does not govern one it
+RESTORES: `session/load` returns the mode the session was last left in, and
+`session/set_mode` ACCEPTS the auto-approving mode on a live session. So a session
+moved to that mode and later resumed comes back permissive with the seed still in the
+child's environment, and nothing about the spawn would say so. The read-back therefore
+runs on the LOAD response as well as the new one, which is one extra call site and no
+new mechanism. When a harness owns its own sessions, ask what a RESTORED one carries
+that a fresh one does not — a guarantee established at spawn is not automatically a
+guarantee at resume.
+
+**The third is a gate this run needed and the corpus did not have.** Reviewing the new
+fixtures by hand against the README's redaction rules surfaced that the shipped corpus
+carries three classes of recording-host data across nineteen files from every prior
+harness: a scratch run id, request and run uuids, and the harness's own command
+inventory. None is a credential, which is why every scrubber and scanner passes over
+them — the class that gets through is an ENUMERATION, because it reads as ordinary
+product data while describing what the recording host HAS.
+The ratchet that closes it is eleven marker patterns over every fixture, shrink-only,
+and baselined per FILE and per MARKER CLASS so a new fixture cannot inherit an
+exemption and an old one cannot acquire a second, with a stale entry itself a failure
+because a permission for an absent marker is a permission for the next one. It is a
+change to the SHARED corpus rather than to any harness, so it ships on its own branch
+with its own revert path and is not counted below.
+
+The lesson for a fifth onboarding is the order rather than the gate: review the new
+fixtures by hand BEFORE writing the corpus README, because that review is what finds
+whatever the scrubbers cannot name.
+
+### What a fourth harness cost
+
+Thirty-one files, all of them this harness's own: the corpus gate the fixture review
+turned up is a change to the shared corpus and ships separately, so it is not counted
+here. Thirty-one against thirty-three for the first single-binary harness and
+thirty-eight and forty-three for the two adapters. The
+reduction is not efficiency; it is two costs this harness did not pay. It needed no
+second component, so the install probe names one thing and there is no gate extension
+to ship into a foreign process. And it serves `session/load`, so no membership keys a
+restore workaround.
+
+Read that margin as small on purpose. Four of the thirty-one are files a review found
+rather than the checklist: the harness had been added to three capability sets and one
+mirror table whose CONSUMERS were never wired, so it was declared to deliver Crew's
+tools, to own its sessions and to take its model over a config option while doing none
+of the three. A membership set makes the decision cheap to record and does nothing to
+make it true, and every one of those four gaps was contradicted by prose written in the
+same change. So the honest reading of a falling file count is that the seam has moved
+the cost from writing branches to CHECKING that a declaration has a reader -- and the
+checking is not yet mechanical.
+
+What remains is the irreducible part, and it is worth naming because it is what a
+fifth harness will pay too: one column in each of nine bucket tables, one frame
+corpus, one auth declaration, one install probe, one mirror class, and the three
+per-backend sites in `acp/client.py` that every harness has extended — the spawn arm,
+the spawn label and the stderr label. Those three are the only recurring edit points
+left that a membership set does not already absorb.

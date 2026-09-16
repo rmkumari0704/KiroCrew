@@ -81,7 +81,6 @@ src/kiro_crew/apps/builtins/crew_companion/tests/test_store.py
 src/kiro_crew/apps/builtins/crew_companion/tests/test_write_failures.py
 src/kiro_crew/apps/builtins/design_critique/tests/test_manifest.py
 src/kiro_crew/apps/builtins/dev_fleet/gateway_service.py
-src/kiro_crew/apps/builtins/dev_fleet/server.py
 src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-playwright.py
 src/kiro_crew/apps/builtins/issue_radar/backend/crew_routes.py
 src/kiro_crew/apps/builtins/issue_radar/backend/crew_store.py
@@ -153,7 +152,6 @@ src/kiro_crew/channel_history.py
 src/kiro_crew/channel_transcript_migration.py
 src/kiro_crew/cli_cloud.py
 src/kiro_crew/cli_desktop.py
-src/kiro_crew/cloud/connect.py
 src/kiro_crew/cloud/ec2.py
 src/kiro_crew/cloud/launch_engine.py
 src/kiro_crew/cloud/launch_job.py
@@ -350,7 +348,6 @@ test/test_api_hook_test_stop_payload.py
 test/test_api_input_validation.py
 test/test_api_kiro_hooks.py
 test/test_api_models_retry.py
-test/test_api_server.py
 test/test_api_shutdown.py
 test/test_app_backend.py
 test/test_app_backend_stale_reap.py
@@ -464,7 +461,6 @@ test/test_cli_doctor.py
 test/test_cli_lazy_imports.py
 test/test_cli_logging.py
 test/test_close_guard_parity.py
-test/test_cloud_connect.py
 test/test_cloud_ec2.py
 test/test_cloud_handlers.py
 test/test_cloud_launch_job.py
@@ -543,7 +539,6 @@ test/test_deploy_handlers_coverage.py
 test/test_deploy_profiles_cov80.py
 test/test_deploy_public_gate_3599.py
 test/test_deploy_round14_fixes.py
-test/test_deploy_round15_fixes.py
 test/test_deploy_round16_fixes.py
 test/test_deploy_round17_fixes.py
 test/test_deploy_round18_fixes.py
@@ -587,7 +582,6 @@ test/test_design_tweak_relay_paths.py
 test/test_dev_fleet_app.py
 test/test_dev_fleet_node_toolchain.py
 test/test_dev_fleet_repo_accessor.py
-test/test_dev_fleet_server_coverage.py
 test/test_dev_fleet_server_more_coverage.py
 test/test_diagnostics.py
 test/test_discord_client_coverage.py
@@ -699,7 +693,6 @@ test/test_lesson_contradiction.py
 test/test_lesson_ranking.py
 test/test_lifecycle_hooks.py
 test/test_link_dashboard.py
-test/test_live_target.py
 test/test_llm_pool.py
 test/test_local_gate.py
 test/test_loopback_proxy.py
@@ -908,7 +901,6 @@ test/test_session_summary_api.py
 test/test_session_summary_extract.py
 test/test_session_summary_generate.py
 test/test_session_thread_map.py
-test/test_session_transfer.py
 test/test_session_usage.py
 test/test_sessions_health_cache.py
 test/test_settingref_schema_fixture.py

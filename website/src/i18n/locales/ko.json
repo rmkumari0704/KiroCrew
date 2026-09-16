@@ -571,6 +571,8 @@
       "global": {
         "unattributed_label": "리포지토리가 없는 이벤트",
         "unattributed_note": "이벤트가 저장소를 기록하기 전에 작성되었으므로 어느 저장소에도 귀속할 수 없으며, 아래 단계 수치에도 포함되지 않습니다.",
+        "no_step_activity_label": "이 단계에 속하지 않는 이벤트",
+        "no_step_activity_note": "이 파이프라인에 이벤트가 기록되었지만 — 이벤트 수는 다른 리포지토리를 포함해 기록된 모든 것을 집계합니다 — 어느 것도 이 뷰의 단계에 속하지 않아 열과 최근 활동이 0으로 표시됩니다.",
         "repos_label": "리포지토리",
         "repos_note": "기록에는 다른 저장소의 이벤트도 포함됩니다. 이 보드는 위에서 선택한 저장소만 표시합니다.",
         "title": "파이프라인",
@@ -5552,7 +5554,9 @@
         "app_other": "앱 {{count}}개",
         "categories": "카테고리",
         "first_party": "자체 제공",
-        "sources": "소스"
+        "sources": "소스",
+        "curated_reviewed_by_the_kiro_crew_team": "{{productName}} 팀이 검토함",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "커뮤니티 등록, {{productName}} 팀이 검증하지 않음"
       },
       "featuredSpotlight": {
         "collection": "컬렉션",
@@ -5612,6 +5616,10 @@
       "types": {
         "built_in": "기본 제공",
         "kirocrew_registry": "{{productName}} 레지스트리"
+      },
+      "registryTier": {
+        "curated": "팀 검토됨",
+        "community": "미검증"
       }
     },
     "artifactBody": {
@@ -7235,7 +7243,12 @@
       "name_is_taken_by_a_build_pinned_registry": "'{{name}}'은(는) 이 빌드에서 제공하는 레지스트리 이름입니다. 다른 이름을 선택하세요",
       "included_with_this_installation": "이 설치에 포함됨",
       "trusted_source": "신뢰된 출처",
-      "trusted_source_clones_with_your_git_credentials": "신뢰된 출처 — 이 레지스트리의 앱은 사용자의 Git 자격 증명으로 복제됩니다."
+      "trusted_source_clones_with_your_git_credentials": "신뢰된 출처 — 이 레지스트리의 앱은 사용자의 Git 자격 증명으로 복제됩니다.",
+      "curated_tip_credentialed": "등록 전에 {{productName}} 팀이 검토했습니다. 앱은 사용자의 Git 자격 증명으로 복제됩니다.",
+      "curated_tip_credential_free": "등록 전에 {{productName}} 팀이 검토했습니다. 앱은 사용자의 Git 자격 증명 없이 복제됩니다.",
+      "community_tip_credentialed": "기여자가 간단한 검토만 거쳐 등록했습니다. {{productName}} 팀이 검증하지 않았습니다. 앱은 여전히 사용자의 Git 자격 증명으로 복제되므로 아는 앱만 설치하세요.",
+      "community_tip_credential_free": "기여자가 간단한 검토만 거쳐 등록했습니다. {{productName}} 팀이 검증하지 않았습니다. 아는 앱만 설치하세요.",
+      "registry_id": "ID: {{id}}"
     },
     "rejectDropdown": {
       "reject_all": "모두 거부 — 나머지는 묻지 않고 거부",
@@ -8517,6 +8530,7 @@
     },
     "useWebSocket": {
       "response_ready": "응답 준비 완료",
+      "waiting_for_input": "입력을 기다리고 있습니다",
       "a_task_needs_your_decision": "결정이 필요한 작업이 있습니다",
       "approval_required": "승인 필요",
       "tool_approval": "도구 승인: {{name}}",
@@ -9085,6 +9099,7 @@
       "click_the_bookmark_icon_on_any_rendered_widget_i": "채팅에서 렌더링된 위젯의 북마크 아이콘을 클릭하면 여기에 저장됩니다.",
       "color": "색상",
       "compact_table": "간단한 표",
+      "couldn_t_load_your_artifacts": "아티팩트를 불러오지 못했습니다",
       "create_a_folder_to_organize_your_artifacts": "아티팩트를 정리할 폴더 만들기",
       "delete": "삭제…",
       "deploying": "배포 중…",
@@ -9957,7 +9972,9 @@
       "pop_out_to_window": "별도 창으로 분리",
       "popped_out": "별도 창에 표시 중",
       "previous_chats": "이전 채팅",
-      "regenerate_title_with_llm": "LLM으로 제목 다시 생성",
+      "regenerate_title_with_llm": "LLM으로 제목 다시 생성 — 현재 이름은 '실행 취소'로 되돌릴 수 있습니다",
+      "auto_title": "자동 제목",
+      "undo_auto_title": "실행 취소",
       "remove_knowledge_context": "지식 컨텍스트 제거",
       "return": "되돌리기",
       "return_this_session_to_the_main_window": "이 세션을 기본 창으로 되돌리기",
@@ -10400,6 +10417,8 @@
       "design_docs": "디자인 문서:",
       "dev_fleet": "Dev Fleet",
       "discovery_error": "탐색 오류",
+      "live_state_unknown": "라이브 상태를 확인할 수 없음",
+      "live_state_unknown_help": "게이트웨이가 어떤 체크아웃이 라이브 또는 스테이징 상태인지 보고하지 못해 라이브로 표시된 행이 없습니다. 이는 '없음'이 아니라 '알 수 없음'입니다. 게이트웨이가 응답할 때까지 '라이브로 전환'은 비활성화됩니다. 이 알림 안의 '에이전트에게 문의' 링크를 사용하세요.",
       "disk": "디스크:",
       "disk_worktrees": "디스크(워크트리)",
       "dismiss": "닫기",
@@ -13344,8 +13363,8 @@
         "category_agent_description": "에이전트가 채팅 밖에서 능동적으로 메시지를 보낼 때",
         "category_all": "기본값(모든 카테고리)",
         "category_all_description": "카테고리별 재정의가 없을 때 사용하는 대체 소리",
-        "category_approval": "승인",
-        "category_approval_description": "도구 승인 요청",
+        "category_approval": "승인 및 질문",
+        "category_approval_description": "에이전트에게 도구 승인이나 답변이 필요할 때",
         "category_cron": "Cron",
         "category_cron_description": "예약된 작업 완료",
         "category_heartbeat": "하트비트",
@@ -13358,8 +13377,8 @@
         "category_subagent_description": "백그라운드 서브에이전트 완료",
         "category_taskrunner": "작업",
         "category_taskrunner_description": "Task Runner 완료",
-        "category_turn": "에이전트 응답",
-        "category_turn_description": "에이전트가 어떤 채팅에서든 한 차례를 마쳤을 때",
+        "category_turn": "대화 인계",
+        "category_turn_description": "대화가 끝나거나 입력을 기다리며 일시 중지될 때",
         "channel_default": "채널 기본값",
         "channel_not_active_app_disabled_setting_retained": "채널이 활성 상태가 아닙니다(앱 비활성화) — 설정은 유지됩니다",
         "default_priority": "기본 우선순위: {{priority}}",
@@ -14182,6 +14201,7 @@
         "step_progress": "Step {{current}} of {{total}}",
         "keeps_running": "Keeps running if you leave this page.",
         "cancel": "Cancel",
+        "stop_waiting": "대기 중지",
         "cancelling": "Cancelling…",
         "cancel_setup_of": "Cancel setup of {{tag}}",
         "launched_by_kiro_crew": "{{productName}}에서 시작됨",
@@ -14239,6 +14259,7 @@
         "launch_done": "완료 — 새 인스턴스가 준비되어 이제 내 인스턴스에 표시됩니다.",
         "runs_on_gateway": "이 작업은 이 탭이 아니라 게이트웨이에서 실행됩니다 — 페이지를 떠나거나 인스턴스를 전환해도 계속 진행됩니다. 완료될 때까지 {{productName}}을(를) 실행해 두세요.",
         "unverified_cloud_note": "{{productName}}은(는) 이 머신에 AWS 리소스가 있는지 확인할 수 없습니다",
+        "stamped_ec2_note": "EC2 런처로 시작되었습니다. 인스턴스가 아직 실행 중이며 과금되고 있을 수 있습니다. 제거는 이 목록에서만 빼는 것입니다. 과금을 멈추려면 AWS 콘솔에서 삭제하세요.",
         "remove_warning": "제거는 이 목록에서만 빼는 것입니다. 클라우드 인스턴스라면 해당 EC2 인스턴스는 계속 실행되고 과금됩니다 — AWS 콘솔에서 삭제하세요.",
         "checking_against": "Checked against profile {{profile}} in {{region}}.",
         "no_profile_set": "none set (AWS CLI default)",
@@ -14248,8 +14269,15 @@
         "sign_in_unconfirmed": "로그인을 확인할 수 없었습니다. 아래 코드는 여전히 사용할 수 있을 수 있습니다 — 여기서 완료한 다음 인스턴스를 연결하세요.",
         "more_actions": "{{name}}에 대한 추가 작업",
         "edit_settings": "설정 편집",
+        "source_ec2": "EC2",
+        "type_ssm": "SSM",
+        "type_ssh": "SSH",
+        "source_ec2_hint": "EC2 런처로 시작되었습니다. 제거는 이 목록에서만 빼는 것입니다. AWS에서 삭제할 때까지 EC2 인스턴스는 계속 실행되고 과금됩니다.",
+        "transport_hint_ssm": "AWS Systems Manager Session Manager를 통해 연결합니다.",
+        "transport_hint_ssh": "SSH를 통해 연결합니다.",
         "edit_crew": "{{name}} 편집",
         "save_changes": "변경 사항 저장",
+        "save_stopped_note": "대기를 중지했습니다. 해당 저장이 반영되었는지는 알 수 없습니다. 목록에는 현재 상태가 표시됩니다. 수정 내용은 그대로 있습니다. 다시 저장하거나 취소하세요.",
         "saving": "저장 중…",
         "failed_to_save_crew": "이 인스턴스를 저장할 수 없습니다",
         "edit_reconnect_note": "호스트, 포트 또는 연결 방법을 변경하면 현재 터널이 닫힙니다. 준비되면 다시 연결하세요.",
@@ -14901,6 +14929,7 @@
       "session_open_error_named": "‘{{name}}’을(를) 열 수 없었습니다.",
       "session_open_error": "세션을 열 수 없었습니다.",
       "session_gone_open_failed_named": "‘{{name}}’은(는) 삭제되어 열 수 없습니다.",
+      "truncated_chars": "…({{count}}자 생략됨 — 새로 고침하면 전체 출력 표시)",
       "truncated": "…(생략됨)"
     }
   },
@@ -15017,6 +15046,35 @@
       "gray": "회색",
       "light": "라이트 {{name}}",
       "white": "흰색"
+    },
+    "toolCallTitle": {
+      "and_more_other": "{{title}} 외 {{count}}개",
+      "build": "빌드",
+      "create": "{{path}} 만들기",
+      "edit": "{{path}} 편집",
+      "fetch": "{{host}} 가져오기",
+      "find_files": "‘{{pattern}}’ 파일 찾기",
+      "find_files_in": "{{path}}에서 ‘{{pattern}}’ 파일 찾기",
+      "git": "Git {{sub}}",
+      "git_path": "Git {{sub}} {{path}}",
+      "github": "GitHub {{noun}} {{verb}}",
+      "github_api": "GitHub API {{path}}",
+      "github_target": "GitHub {{noun}} {{verb}} {{target}}",
+      "install_dependencies": "의존성 설치",
+      "lint": "린트",
+      "list_files": "파일 목록",
+      "list_files_in": "{{path}}의 파일 목록",
+      "mcp_with_arg": "{{title}}: {{arg}}",
+      "print": "출력",
+      "read": "{{path}} 읽기",
+      "read_range": "{{path}} 읽기 ({{from}}–{{to}})",
+      "request": "{{method}} {{host}}",
+      "run_script": "스크립트 {{name}} 실행",
+      "run_tests": "테스트 실행",
+      "search": "‘{{query}}’ 검색",
+      "search_in": "{{path}}에서 ‘{{query}}’ 검색",
+      "search_web": "웹에서 ‘{{query}}’ 검색",
+      "view_image": "이미지 {{path}} 보기"
     }
   },
   "memoryV2": {

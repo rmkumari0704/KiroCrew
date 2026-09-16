@@ -97,9 +97,27 @@ Search for the marker words an internal build uses (`[Internal]`, a fleet name, 
 codename you do not recognise) before committing, and do not rely on
 `internal-content-scan`: it cannot know a codename it has never seen.
 
+`scripts/check_acp_frame_host_data.py` holds the part of that review a machine can:
+twelve marker patterns over every fixture, shrink-only, and baselined per FILE and per
+MARKER CLASS so a new fixture cannot inherit an exemption and an old one cannot acquire
+a second. It is a floor under the hand review, not a replacement for it — it knows the
+markers it was given and nothing about a codename it has never seen either.
+
 Prefer re-recording against throwaway data over editing a capture down: an
 edited frame is no longer evidence of what the wire carried, and the `_meta`
 header claims it is.
+
+Two of the marker classes cannot be re-recorded away, because the value is minted
+by the agent rather than read from the host: a session or request uuid, and a
+scratch run id. The sanctioned remedy for those is normalization AT CAPTURE, in the
+capture script's own reduction step -- the id is replaced with a fixed synthetic
+value (`goose-session-1`, `perm-1`) before the frame is written, the way the goose
+corpus does it, and the `_meta.note` records that the ids are synthetic. A frame
+reduced that way is still evidence: the id was never the fact the fixture pins.
+Until a pre-gate corpus is re-captured through such a step, its uuid and run-id
+entries are an accepted debt, held in the baseline and pinned entry by entry in
+`test_acp_frame_host_data.py`, and paying one down means re-capturing the file,
+not editing the id in place.
 
 ## What the corpus does not pin
 

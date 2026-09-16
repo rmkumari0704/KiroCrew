@@ -291,6 +291,7 @@ _SENSITIVE_RELATIVE_DIRS = (
     ".claude/.credentials.json",
     ".codex/auth.json",
     ".config/gcloud",
+    ".config/goose/secrets.yaml",
     ".docker/config.json",
     ".git-credentials",
     ".gnupg",

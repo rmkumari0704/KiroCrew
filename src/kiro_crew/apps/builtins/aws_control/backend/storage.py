@@ -49,6 +49,7 @@ from kiro_crew.config.paths import data_home
 from kiro_crew.deploy import engine
 from kiro_crew.deploy.engine import AWSError, _checked, _harden_bucket
 from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.sandbox import crew_home_visible_spellings
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -698,7 +699,14 @@ def get_object_head_bytes(
     and the shared file-tool gate refuses. That mask would hide the directory
     from the sandboxed CLI as well, so the per-call directory is named in
     ``extra_visible_dirs`` — lifting the mask for this one fixed-argv spawn,
-    never for the agent.
+    never for the agent. It is named in EVERY spelling the masks use for the
+    crew data home (:func:`sandbox.crew_home_visible_spellings`): the mask list
+    carries both ``$HOME``-joined crew-home prefixes as well as the resolved
+    ``config_dir()`` path, the lift is decided lexically, and under a symlinked
+    ``$HOME`` those are different strings for one directory — so naming only the
+    resolved one leaves a surviving mask to bind an empty directory straight back
+    over the staged file, and the CLI reports ``ENOENT`` on a path the gateway
+    just created.
 
     The mask is a Linux/macOS mechanism; Windows has no sandbox, so there the
     destination is pinned by IDENTITY instead of by hiding, and the pin covers
@@ -773,7 +781,7 @@ def get_object_head_bytes(
                 profile,
                 action="s3:GetObject",
                 timeout=60,
-                extra_visible_dirs=(tmp_dir,),
+                extra_visible_dirs=crew_home_visible_spellings(tmp_dir),
             )
         except AWSError as exc:
             # A byte range is unsatisfiable against a 0-byte object, and S3

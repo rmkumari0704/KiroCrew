@@ -376,6 +376,50 @@ def opencode_install_command() -> str:
     return OPENCODE_INSTALL_COMMAND
 
 
+def goose_resolves() -> bool:
+    """Whether the goose binary resolves on this host right now.
+
+    One seam, like opencode's and unlike the adapters' two: this harness serves ACP
+    itself, so the thing that resolves IS the thing that runs.
+    """
+    from kiro_crew.acp.client import _resolve_goose_bin
+
+    binary, _searched_path = _resolve_goose_bin()
+    return bool(binary)
+
+
+def goose_cached_negative() -> bool:
+    """Has the RUNNING gateway already resolved the goose binary as absent?
+
+    Same hazard and same resolution as the seams above: the path is resolved once per
+    process behind an ``_UNRESOLVED`` sentinel and never invalidated, so a probe
+    reporting "installed" after an install would disagree with every spawn until a
+    restart. Consulted, never invalidated -- a dashboard GET must not mutate a global
+    on the spawn path.
+    """
+    from kiro_crew.acp import client as _client
+
+    cached = getattr(_client, "_goose_bin_cache", None)
+    if cached is None or cached is getattr(_client, "_UNRESOLVED", object()):
+        return False
+    try:
+        binary, _searched = cached  # type: ignore[misc]
+    except Exception:
+        return False
+    return not binary
+
+
+def goose_install_command() -> str:
+    """The harness's own installer, read from the spawn path's constant.
+
+    Imported rather than restated so the command an operator is told to run and the
+    binary the ladder searches for cannot drift apart.
+    """
+    from kiro_crew.acp.client import GOOSE_INSTALL_COMMAND
+
+    return GOOSE_INSTALL_COMMAND
+
+
 def pi_components_resolve() -> tuple[bool, bool]:
     """``(adapter, pi_cli)`` -- the pi backend's two halves, separately.
 

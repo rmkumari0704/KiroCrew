@@ -172,6 +172,20 @@ table; `docs/ci/ci-and-reviews.md` points at it, and
 `test/test_review_repair_routing_skill.py` pins the row order deliberately, so a
 generation change is one table edit plus the test that records the policy.
 
+## Why both body checks are gates
+
+`--check-body` gates completeness (exit 20) and length (exit 21) at once, and
+the two pull in opposite directions on purpose. The accounting check is the leak
+detector, not the prose: a long walkthrough hides a stray file better than a
+short body does, because the reviewer trusts it and skips the diff. The length
+check used to be a WARN, on the theory that a rename or a shared-helper migration
+needs the words and a hard cap cuts true facts. In practice the WARN was never
+read: the hard check rewarded listing, the soft one was ignored, and bodies grew
+round by round into per-file recitals nobody could read. With the ledger
+guaranteed complete, a cap cannot cut a true fact -- only a restated one. The
+code is the evidence; the body says what changed and why. Short prose, complete
+ledger -- paths, tables and pictures never count against the limit.
+
 ## Why the PR body must come from the template file
 
 The maintainer's auto-approval bot greps for the template's exact heading strings.

@@ -11,7 +11,7 @@ import MarkdownRenderer from '../../components/MarkdownRenderer'
 import MessageErrorBoundary from '../../components/MessageErrorBoundary'
 import SelectionToolbar, { useSelectionActions } from '../../components/SelectionToolbar'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
-import { applySearchHighlights } from '../../utils/domHighlight'
+import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import FileChangeChips, { type FileChangeEntry } from '../../components/FileChangeChips'
 import type { FileChipStyle } from './ChatSettings'
@@ -276,22 +276,25 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
     // otherwise rapid navigation piles up concurrent loops + window listeners.
     const cancelScroll = currentOcc >= 0 ? scrollCurrentMatchIntoView(el) : undefined
 
+    // The highlights are Ranges registered on a page-wide CSS.highlights entry
+    // (see domHighlight), so this bubble's ranges MUST be withdrawn when it
+    // unmounts: a virtualized row that scrolls away would otherwise stay alive
+    // through the ranges pointing into its detached subtree.
+    const withdraw = () => clearSearchHighlights(el)
+
     // Code blocks use dangerouslySetInnerHTML — hljs runs in a child
-    // useEffect and sets innerHTML asynchronously after this effect.
-    // A MutationObserver catches those deferred DOM updates and re-runs
-    // the TreeWalker so code block content gets highlighted too.
-    //
-    // The observer also fires when our own applySearchHighlights mutates
-    // the DOM (inserting <mark> elements). To prevent an infinite loop:
-    // 1. Disconnect the observer before running the TreeWalker
-    // 2. Re-observe after the TreeWalker finishes
-    // 3. Batch rapid mutations via requestAnimationFrame + a scheduled flag
+    // useEffect and sets innerHTML asynchronously after this effect — and a
+    // streaming message re-parses on every token. Either replaces text nodes
+    // the ranges point into, which collapses them (they paint nothing, and
+    // React is untouched). A MutationObserver re-runs the TreeWalker so the
+    // fresh nodes are painted, batched per animation frame because a token
+    // burst fires many mutation records for one visual update. Registering a
+    // Range mutates no DOM, so the walk cannot trigger the observer itself.
     //
     // Performance: the observer fires on any subtree mutation (React
-    // re-renders, hljs updates, our own marks). Each firing runs one
-    // TreeWalker pass which is sub-millisecond even for long messages,
-    // so the extra runs are negligible.
-    if (!term) return () => cancelScroll?.()
+    // re-renders, hljs updates). Each firing runs one TreeWalker pass which is
+    // sub-millisecond even for long messages, so the extra runs are negligible.
+    if (!term) return () => { cancelScroll?.(); withdraw() }
     let disposed = false
     let scheduled = false
     const observer = new MutationObserver(() => {
@@ -300,13 +303,11 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
       requestAnimationFrame(() => {
         scheduled = false
         if (disposed) return
-        observer.disconnect()
         run()
-        observer.observe(el, { childList: true, subtree: true, characterData: true })
       })
     })
     observer.observe(el, { childList: true, subtree: true, characterData: true })
-    return () => { disposed = true; observer.disconnect(); cancelScroll?.() }
+    return () => { disposed = true; observer.disconnect(); cancelScroll?.(); withdraw() }
   }, [term, caseSensitive, currentOcc, effectiveContent, rawMode])
 
   // Four whole-sentence keys, one per combination of the two optional clauses,

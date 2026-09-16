@@ -70,18 +70,11 @@ class TestConductorInstaller:
         assert data["name"] == "kirocrew-conductor"
         assert "work item" in data["prompt"]
 
-    def test_prompt_carries_the_verbosity_placeholder(self, tmp_path, monkeypatch):
-        """The conductor is a custom agent, so it gets its OWN prompt.
-
-        ``build_message`` reads a custom agent's prompt from its spec instead of
-        ``config/prompt.md``, and ``_resolve_prompt_templates`` only expands the
-        token where it appears. Without the token here the user's
-        ``dashboard.verbosity`` setting silently never reaches this agent, so
-        every conductor turn answers at ``default`` length no matter what the
-        person picked. Pinned, not commented, because the omission is invisible.
-        """
+    def test_prompt_does_not_carry_the_retired_verbosity_token(self, tmp_path, monkeypatch):
         data = self._install(tmp_path, monkeypatch)
-        assert "{{VERBOSITY_BLOCK}}" in data["prompt"]
+        # Reply style now arrives as session-context chrome for every
+        # agent; a token left here would reach the model as a literal.
+        assert "{{VERBOSITY_BLOCK}}" not in data["prompt"]
 
     def test_prompt_drives_patrol_with_monitor_start_not_wait(self, tmp_path, monkeypatch):
         """A patrol round outlives a turn, so the loop must own the turn boundary.

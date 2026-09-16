@@ -42,6 +42,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import _DEFAULT_PORT, config_dir
 from kiro_crew.instances.constants import TTL_PATTERN
 from kiro_crew.instances.validation import _AWS_PROFILE_RE as _validation_aws_profile_re
+from kiro_crew.slugs import slug_hash_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ def _slugify(name: str) -> str:
     """Derive a slug-like id from a human name (lowercase, hyphen-separated)."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     slug = slug[:63]
-    return slug or "instance"
+    return slug or slug_hash_fallback(name, "instance")
 
 
 def validate_ttl(ttl: str) -> None:
@@ -188,6 +189,9 @@ class Instance:
     # launcher-provisioned AL2023 user; set "ubuntu" (or whoever runs the remote
     # gateway) on other AMIs, otherwise the tunnel comes up but the mint fails.
     ssm_run_as: str = _DEFAULT_SSM_RUN_AS
+    # Provisioner that created this crew, when known. Empty means the machine
+    # was added directly or predates source tracking.
+    provisioner_id: str = ""
     # Sticky "connection intent" — the source of truth for whether a tab should
     # exist for this instance. Set True when a tunnel is opened and cleared ONLY
     # on an explicit user disconnect; deliberately LEFT TRUE across gateway
@@ -262,6 +266,10 @@ class Instance:
                     f"invalid {label} {port!r}: must be an int in "
                     f"[{lo}, 65535]" + (" (0 = unallocated)" if allow_zero else "")
                 )
+        if not isinstance(self.provisioner_id, str):
+            raise InvalidInstanceError(
+                f"invalid provisioner_id {self.provisioner_id!r}: must be a string"
+            )
         if not isinstance(self.forwarder_pid, int) or self.forwarder_pid < 0:
             raise InvalidInstanceError(
                 f"invalid forwarder_pid {self.forwarder_pid!r}: must be an int "
@@ -293,6 +301,7 @@ class Instance:
             "aws_profile": self.aws_profile,
             "aws_region": self.aws_region,
             "ssm_run_as": self.ssm_run_as,
+            "provisioner_id": self.provisioner_id,
             "was_connected": self.was_connected,
             "forwarder_pid": self.forwarder_pid,
             "forwarder_start": self.forwarder_start,
@@ -329,6 +338,7 @@ class Instance:
             # by an older build has no key, and one written with an explicit
             # empty string would fail validation — both mean "use the default".
             ssm_run_as=str(data.get("ssm_run_as", "") or _DEFAULT_SSM_RUN_AS),
+            provisioner_id=str(data.get("provisioner_id", "") or ""),
             was_connected=bool(data.get("was_connected", False)),
             # max(): a hand-edited negative pid normalizes to the sentinel
             # rather than poisoning every later update() with a validate error
@@ -451,6 +461,7 @@ class InstancesRegistry:
         aws_profile: str = "",
         aws_region: str = "",
         ssm_run_as: str = _DEFAULT_SSM_RUN_AS,
+        provisioner_id: str = "",
         instance_id: str | None = None,
     ) -> Instance:
         """Add a new instance and return it.
@@ -491,6 +502,7 @@ class InstancesRegistry:
                 aws_profile=aws_profile,
                 aws_region=aws_region,
                 ssm_run_as=ssm_run_as or _DEFAULT_SSM_RUN_AS,
+                provisioner_id=provisioner_id,
                 was_connected=False,
             )
             inst.validate()
@@ -512,7 +524,7 @@ class InstancesRegistry:
 
         Accepts any of: ``name``, ``ssh_host``, ``remote_port``, ``local_port``,
         ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
-        ``ssm_run_as``,
+        ``ssm_run_as``, ``provisioner_id``,
         ``aws_profile``, ``aws_region``, ``was_connected``, ``forwarder_pid``,
         ``forwarder_start``, ``forwarder_sig``.
         The ``id`` is
@@ -532,6 +544,7 @@ class InstancesRegistry:
             "connection_method",
             "ssm_target",
             "ssm_run_as",
+            "provisioner_id",
             "aws_profile",
             "aws_region",
             "was_connected",

@@ -584,12 +584,13 @@ it is unbounded third-party code and must not overlap the still-running startup
 hook against partially initialized state.
 
 Normal recovery is to retry after retained startup execution exits. If a startup
-hook is permanently wedged, the operator must **stop the gateway completely**,
-run `kirocrew app disable <name>` while no gateway process can execute app code,
-and then restart the gateway. The CLI command only writes `enabled=false` to
-installed-app metadata; it is not runtime teardown and must not be run against a
-live gateway as evidence that old app code stopped. The disabled app is skipped
-on the next startup, allowing the operator to repair or remove it without
+hook is permanently wedged, `kirocrew app disable <name>` performs runtime
+teardown when it reaches the running Gateway through its owner-only Unix socket;
+a retained hook can still make that live request return the retryable refusal
+above. If the CLI cannot reach that socket, it only records `enabled=false` for
+the next Gateway start. In that file-only case the operator must **stop the
+Gateway completely** before running the command, then restart it: the disabled
+app is skipped on startup, allowing the operator to repair or remove it without
 re-entering the wedged hook.
 
 Graceful gateway shutdown sweeps retained startup ownership for **every enabled
@@ -639,6 +640,12 @@ when the budget fires, and cancelling it then would mean that backend is never
 signalled at all — instead the sweep returns and the stops finish in the
 background. The sweep is not gated on the lifecycle dispatcher being
 initialized, and one app's failing stop does not skip the rest.
+
+The routes' async `app_lifecycle_lock` serializes route handlers only and does
+not imply exclusive backend-lifecycle ownership; any new lifecycle path must
+advance the generation through the public `start_app_backend` or
+`stop_app_backend` entry points, which take `_health_reconcile_lock` and `_lock`
+and call `_advance_lifecycle_locked`, never by mutating `_processes` directly.
 
 ## 8. An app's EventBus only exists with a real broadcast function
 
@@ -735,9 +742,12 @@ would silently delete a dependency the user explicitly chose to keep.
 `GET /api/apps/{name}/uninstall/preview` is the read-only classification that
 feeds the confirm dialog, and it is **additive**: a client that skips it and
 POSTs straight to uninstall gets the same safe default (clean removable, keep
-everything else). The handler exists and is exercised by the dashboard client;
-if a route table refactor drops its registration the dialog silently degrades to
-no preview, since the frontend treats the fetch as best-effort.
+everything else). The route is registered by `register_app_routes` and
+exercised by the dashboard client; `TestUninstallPreview` in
+`test/test_apps_routes_coverage.py` drives it over the router with an HTTP
+test client, so removing the registration fails that test rather than
+degrading silently. The frontend still treats the fetch as best-effort: on
+failure the dialog renders without the dependency panel.
 
 Dependency resolution itself is **non-blocking by design**: no capability manager
 may exist (the public edition ships none), network failures are transient, and
@@ -1296,6 +1306,27 @@ already be satisfied by the one write that started it. `default_registries()`
 ships in the wheel, so an `owner` tier is a claim the build makes and the agent
 cannot forge.
 
+**Two axes, kept separate: `trust` and `review`.** `trust` answers "may this
+registry's apps clone with this machine's git credentials?"; `review` answers
+"how thoroughly were these listings reviewed before publication?" and is
+display-only. A `curated` registry at the `index` tier still clones
+credential-free, and a `community` one at the `owner` tier still clones with
+credentials — collapsing the two would make "we read the listings" hand out a
+credential. `review` is one of `""` / `"curated"` / `"community"`, and `label` is a
+display name shown instead of the `name` id. Both are build-only for the same
+reason `owner` is: `GET /api/apps/registries` reports them empty on operator rows
+and the PUT drops them, so a write into agent-writable `config.json` cannot stamp
+a source "Reviewed by the Kiro Crew team". An unrecognised `review` DEGRADES to `""` (no
+claim) and is logged at error level; it never drops the pinned row. This list
+also feeds index fetch, the trusted-host allowlist and install, so dropping would
+let a typo in a display field take a whole registry offline — its apps gone from
+the store, its installs failing, its host out of the clone-trust set. Degrading
+is not the falsely-reassuring outcome it looks like: `""` is what a build that
+never set the field renders, so a mistyped `community` shows an unbadged row
+rather than a trusted-looking one. `label` never
+replaces `name`: the id keys the index cache path and every installed app's
+`_registry` tag, so renaming would orphan installed apps.
+
 Consequences worth stating, because they close off designs that look reasonable:
 
 - The tier is only honoured for a registry that is BOTH build-pinned and in force.
@@ -1595,6 +1626,38 @@ are `_health_check_loop` (bounded startup poll) and `_watch_backend_health`
   recover on its own, so one observation demotes it and the watch stops. An
   **adopted** backend has no `Popen` handle — it belongs to another supervisor —
   and is judged by its health endpoint alone.
+- **An unexpected spawned-process exit is restarted, but never blindly.** After
+  the dead generation's MCP scrub has landed, the supervisor reuses
+  `start_app_backend` so its replacement follows the normal pidfile, health-gate,
+  and MCP-promotion path. It restarts only while the exact record remains tracked,
+  the app is positively enabled (unknown fails closed), and the process-wide gateway
+  shutdown signal is clear; adopted instances are excluded. The first replacement
+  attempt is immediate; subsequent fast-phase failures back off 1s, 2s, 4s … to 30s.
+  After eight fast attempts (0+1+2+4+8+16+30+30 seconds, a 91-second window), the
+  supervisor warns once and retries every 300 seconds for as long as the app stays
+  enabled (disable the app to stop). The fast window covers a per-user service-manager
+  restart lasting about 45 seconds with margin before the coarse steady cadence takes
+  over; it is not a give-up bound. A replacement returns the retry budget to the fast
+  phase only after four consecutive healthy liveness sweeps (about 60 seconds), so a
+  process that passes its startup gate and then repeatedly exits is retried at the
+  steady interval indefinitely while enabled. Every replacement attempt re-vets
+  governance for all apps and admission for non-builtin apps. An affirmative policy
+  denial, admission re-vet error, or platform composition error ends supervision after
+  one warning and a denied SEL record. A governance-evaluator error refuses only that
+  attempt, is audited as an error, and keeps the current fast or steady cadence so the
+  next attempt re-vets. A permitted re-vet is audited too (`app_backend_restart`,
+  `outcome="allowed"`, with the attempt number) before the spawn: the restart exercises
+  the app's execution grant with no operator in the loop, so the SEL trail records the
+  decision rather than leaving it to be inferred from the `app_backend_spawn` that
+  follows. Boot and interactive activation are unchanged. Every deliberate
+  stop and every explicit external start advances a per-app lifecycle generation; the
+  spawn does not. The restart snapshots that generation when it removes the dead record:
+  a later STOP tears down its exact replacement, while a later START adopts/reuses the
+  replacement and supersedes the stale stop. PID-file cleanup is likewise conditional on
+  the exited process's exact `(pid, start_time)` identity, so it cannot erase a successor
+  recorded under the same app name. A failed spawn and a spawn that raises follow the
+  same restore/backoff path. An exit during the startup health gate continues the same
+  retry budget rather than stranding the enabled app.
 - **An HTTP failure from a live process is not decisive.** A backend can be
   briefly busy, so demotion needs `_HEALTH_WATCH_FAILURES` consecutive misses;
   demoting on a single miss would let one slow response take a working app
@@ -1784,9 +1847,40 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
   confirmed-scrubbed, so it must never be read as a plain boolean. Each sweep
   reconciles when the verdict changed **or** when that record is behind the verdict.
   The terminal exited-process path consults it too, and does not return until the entry
-  is reconciled or the record is dropped. That path is the one place where giving up is
-  permanent — nothing revisits an exited backend — so returning on an unlanded scrub
-  would strand the dead URL for kiro-cli to dial on every session.
+  is reconciled or the record is dropped. That path hands the dead record to the restart
+  supervision below, and until a replacement publishes nothing else revisits the entry —
+  so returning on an unlanded scrub would strand the dead URL for kiro-cli to dial on
+  every session in the meantime.
+- **An enabled app is restarted until it recovers or is disabled.** An exited spawned
+  backend first gets the fast ramp (immediate, 1, 2, 4, 8, 16, 30, and 30 seconds), then
+  moves to one attempt every 300 seconds for as long as the app stays positively enabled.
+  The transition is warned once per supervision loop — a loop-local latch, not a field
+  on the tracked `AppProcess` — so a replacement that later exits starts a fresh ramp
+  and may warn again. There is deliberately no terminal
+  give-up state: like systemd's `Restart=always`, an enabled service must not remain dead
+  waiting for a human to notice it. Persistent failures are bounded to the slow cadence,
+  and `_restart_attempts` resets only after `_RESTART_STABLE_SWEEPS` healthy checks, so a
+  post-gate flapper cannot regain the fast ramp merely by surviving startup briefly.
+  Every wait is shutdown-aware, and every ramp or steady-state iteration repeats the
+  record identity, enablement, lifecycle-generation, and post-spawn ownership guards.
+- **Restart is driven from the exit observation, not by a per-app single-writer
+  supervisor.** Two alternatives would delete the generation and ownership protocol
+  and were rejected. A periodic level-triggered sweep ("every enabled app with no live
+  process gets one") adds up to one interval of downtime on every exit and needs a
+  second scheduler for the ramp. An event-kicked single-writer supervisor — one actor
+  per app that owns `_processes[name]` and is woken by the same exit — keeps the
+  immediacy and the ramp, but it only deletes the protocol if EVERY writer becomes a
+  message to that actor: `start_app_backend` and `stop_app_backend` are synchronous,
+  result-returning calls whose callers (the routes, the disable rollback, update,
+  uninstall, boot's fixed-port preclaim) depend on the outcome before they continue, so
+  routing them through an actor changes the public lifecycle API for every caller on
+  main rather than the health watch alone. And the actor does not remove the concepts
+  it is meant to replace: an interactive stop arriving during a 300 s backoff wait must
+  preempt that wait, which needs a "which request is current" token — the lifecycle
+  generation under another name — and the interactive spawn must stay single-flighted,
+  which is the STARTING placeholder. The protocol is therefore the price of restarting
+  from within the existing multi-writer lifecycle without redesigning it; a future
+  single-writer redesign remains open and would be a new spec section, not a repair.
 - **The startup poll belongs to ONE generation, bound at the spawn.** The supervisor is
   handed the `AppProcess` itself and derives both name and port from it; every attempt
   re-checks that the record is still the tracked one. A name plus a port are two

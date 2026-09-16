@@ -154,6 +154,10 @@ _INHERITED_HOME_OVERRIDE_ENV_VARS = (
     "XDG_DATA_HOME",
     # pi's whole agent directory, credential store included, follows this one.
     "PI_CODING_AGENT_DIR",
+    # goose's file-based secret store follows the XDG config directory, which is a
+    # different one from the data directory above: on that harness the config home
+    # is where the secret lives.
+    "XDG_CONFIG_HOME",
 )
 
 

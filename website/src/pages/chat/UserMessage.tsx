@@ -6,7 +6,7 @@ import { copySessionLink } from '../../utils/shareUrl'
 import { ICON_ACTION_ROW_CLS } from '../../utils/touchActions'
 import { useSearchHighlight, useCurrentOcc } from '../../hooks/SearchHighlightContext'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import { applySearchHighlights } from '../../utils/domHighlight'
+import { applySearchHighlights, clearSearchHighlights } from '../../utils/domHighlight'
 import { scrollCurrentMatchIntoView } from '../../utils/searchScroll'
 import { containedSelectionRange } from '../../utils/selectionContainment'
 import { type PasteBlock, expandAll as expandPasteTokens } from '../../utils/pasteTokens'
@@ -183,7 +183,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     // Converge-center the exact occurrence (see scrollCurrentMatchIntoView).
     // Cancel on re-run/unmount so rapid navigation doesn't accumulate loops.
     const cancelScroll = currentOcc >= 0 ? scrollCurrentMatchIntoView(el) : undefined
-    return () => cancelScroll?.()
+    // The ranges live on a page-wide CSS.highlights entry (see domHighlight):
+    // withdraw this bubble's on unmount so a virtualized row that scrolls away
+    // is not kept alive through them.
+    return () => { cancelScroll?.(); clearSearchHighlights(el) }
   }, [term, caseSensitive, currentOcc, content])
 
   /** Native select+copy from a sent bubble gives the literal chip label

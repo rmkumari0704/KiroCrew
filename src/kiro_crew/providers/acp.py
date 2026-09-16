@@ -26,6 +26,7 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -41,6 +42,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_CLAUDE,
     PROVIDER_LABEL_CODEX,
     PROVIDER_LABEL_DEFAULT,
+    PROVIDER_LABEL_GOOSE,
     PROVIDER_LABEL_KAS,
     PROVIDER_LABEL_OPENCODE,
     PROVIDER_LABEL_PI,
@@ -557,6 +559,11 @@ class AcpProvider(LLMProvider):
     def is_pi_backend(self) -> bool:
         """True when this ACP provider talks to pi-acp (vs kiro-cli)."""
         return self._client.backend == ACP_BACKEND_PI
+
+    @property
+    def is_goose_backend(self) -> bool:
+        """True when this ACP provider talks to goose (vs kiro-cli)."""
+        return self._client.backend == ACP_BACKEND_GOOSE
 
     @property
     def is_kas_backend(self) -> bool:
@@ -1643,7 +1650,15 @@ class AcpProvider(LLMProvider):
             tool_input=e.tool_input,
             tool_input_redacted=e.tool_input_redacted,
             tool_output=e.tool_output,
+            tool_output_digest=e.tool_output_digest,
+            tool_output_bytes=e.tool_output_bytes,
             tool_final=e.tool_final,
+            # Forwarded beside `tool_final` because it is NOT derivable from it:
+            # `tool_final` is true only for a completed call, so a consumer that
+            # needs to know a tool FAILED has this field or nothing. Dropping it
+            # here would leave every non-dashboard consumer of the provider
+            # interface unable to tell a failure from a call still in progress.
+            tool_status=e.tool_status,
             usage=e.usage,
             raw_tool_params=e.raw_tool_params,
             # PROVENANCE flags for the child-fidelity gate. Dropping these
@@ -2029,4 +2044,6 @@ def provider_label(provider: Any) -> str:
         return PROVIDER_LABEL_OPENCODE
     if backend == ACP_BACKEND_PI:
         return PROVIDER_LABEL_PI
+    if backend == ACP_BACKEND_GOOSE:
+        return PROVIDER_LABEL_GOOSE
     return PROVIDER_LABEL_DEFAULT

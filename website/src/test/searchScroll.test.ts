@@ -1,12 +1,15 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeAll } from 'vitest'
 import {
   pickSearchScrollBehavior,
   RAPID_STEP_MS,
   scrollCurrentMatchIntoView,
+  scrollRangeToCenter,
   pollRowSettled,
   glideOnceStep,
   attachUserScrollIntent,
 } from '../utils/searchScroll'
+import { applySearchHighlights, clearSearchHighlights, getCurrentSearchRange } from '../utils/domHighlight'
+import { installHighlightApiStub } from './highlightApiStub'
 
 describe('pickSearchScrollBehavior', () => {
   it('snaps (auto) when stepping faster than the threshold', () => {
@@ -603,5 +606,107 @@ describe('attachUserScrollIntent', () => {
     expect(step.mock.calls.length).toBe(callsAtAbort)
     detach()
     cancel()
+  })
+})
+
+// The current match is a Range painted by domHighlight, not a <mark> element
+// (the transcript never wraps matched text in a node of its own), so centering
+// reads the range's rect and drives each scrollable ancestor directly.
+describe('scrollCurrentMatchIntoView: range-based target', () => {
+  beforeAll(() => { installHighlightApiStub() })
+
+  function rect(top: number, height = 20): DOMRect {
+    return { top, height, bottom: top + height, left: 0, right: 0, width: 0, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+  }
+
+  /** Append one paragraph of plain text to `host` (built with createElement +
+   *  textContent, never an HTML sink). */
+  function para(host: HTMLElement, text: string): void {
+    const p = document.createElement('p')
+    p.textContent = text
+    host.appendChild(p)
+  }
+
+  /** A scroller with layout numbers happy-dom does not compute. */
+  function scroller(opts: { top: number; height: number; scrollHeight: number }): HTMLElement {
+    const el = document.createElement('div')
+    el.style.overflowY = 'auto'
+    Object.defineProperty(el, 'clientHeight', { value: opts.height })
+    Object.defineProperty(el, 'scrollHeight', { value: opts.scrollHeight })
+    el.getBoundingClientRect = () => rect(opts.top, opts.height)
+    document.body.appendChild(el)
+    return el
+  }
+
+  function paintCurrent(host: HTMLElement, term: string, top: number): Range {
+    applySearchHighlights(host, term, false, 0)
+    const r = getCurrentSearchRange()!
+    r.getBoundingClientRect = () => rect(top)
+    return r
+  }
+
+  it('scrollRangeToCenter centres the range inside its scrollable ancestor', () => {
+    const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+    para(box, 'find me')
+    const r = paintCurrent(box, 'me', 500)
+    scrollRangeToCenter(r)
+    // range mid 510, scroller centre 100 → scroll down by 410
+    expect(box.scrollTop).toBe(410)
+    clearSearchHighlights(box); box.remove()
+  })
+
+  it('scrollRangeToCenter falls through to the window when no ancestor scrolls', () => {
+    const host = document.createElement('div')
+    para(host, 'find me')
+    document.body.appendChild(host)
+    const r = paintCurrent(host, 'me', 600)
+    const scrollBy = vi.spyOn(window, 'scrollBy').mockImplementation(() => {})
+    scrollRangeToCenter(r)
+    expect(scrollBy).toHaveBeenCalledTimes(1)
+    const [, dy] = scrollBy.mock.calls[0] as [number, number]
+    expect(dy).toBe(610 - window.innerHeight / 2)
+    scrollBy.mockRestore()
+    clearSearchHighlights(host); host.remove()
+  })
+
+  it('the converge poll measures the current range and steps the scroller', () => {
+    const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+    para(box, 'alpha beta')
+    paintCurrent(box, 'beta', 500)
+    const d = makeDriver()
+    const cancel = scrollCurrentMatchIntoView(box, { raf: d.raf, now: d.now, maxMs: 5000 })
+    d.flush(1)
+    expect(box.scrollTop).toBe(410)
+    cancel()
+    clearSearchHighlights(box); box.remove()
+  })
+
+  it('a current range outside `root` is not this poll\'s target', () => {
+    const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+    para(box, 'alpha beta')
+    const other = document.createElement('div')
+    para(other, 'beta')
+    document.body.appendChild(other)
+    paintCurrent(other, 'beta', 500)
+    const d = makeDriver()
+    const cancel = scrollCurrentMatchIntoView(box, { raf: d.raf, now: d.now, maxMs: 5000 })
+    d.flush(3)
+    expect(box.scrollTop).toBe(0)
+    cancel()
+    clearSearchHighlights(other); other.remove(); box.remove()
+  })
+
+  it('idles (no step) while the painted node has left the document', () => {
+    const box = scroller({ top: 0, height: 200, scrollHeight: 1000 })
+    para(box, 'alpha beta')
+    paintCurrent(box, 'beta', 500)
+    // A re-render swapped the paragraph's text node out from under the range.
+    box.querySelector('p')!.textContent = 'alpha beta gamma'
+    const d = makeDriver()
+    const cancel = scrollCurrentMatchIntoView(box, { raf: d.raf, now: d.now, maxMs: 5000 })
+    d.flush(3)
+    expect(box.scrollTop).toBe(0)
+    cancel()
+    clearSearchHighlights(box); box.remove()
   })
 })

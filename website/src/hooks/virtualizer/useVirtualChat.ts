@@ -2598,6 +2598,21 @@ export function useVirtualChat<T>(
               prevHeight: prevH,
               newHeight: newH,
               foldTop: el.getBoundingClientRect().top,
+              // The streaming row (and the row in its post-stream settle grace)
+              // grows by APPENDING at its bottom. Same identity the immediate
+              // sync below keys on; a straddling row growing this way moves
+              // nothing above the fold, so the predicate must not compensate
+              // it (#10810 -- the "pushed up while reading the middle" drift).
+              //
+              // EXCEPT during the rail's collapse animation: for those ~150ms
+              // the content column's width changes every frame and the row
+              // RE-WRAPS, so its height change is a reprice distributed over
+              // the whole row -- including the part above the fold -- not an
+              // append. Keep the straddling-row compensation for that window
+              // (WebKit has no native anchor to fall back on); the per-token
+              // drift it re-admits is bounded by RAIL_SETTLE_MS.
+              appendsAtBottom:
+                (idx === streamingIndexRef.current || idx === graceIndexRef.current) && !isRailSettling(),
             })
             // Which row grew decides whether growth is FOLLOWABLE. Streaming
             // and widget-load growth happens at the TAIL, where following it

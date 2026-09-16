@@ -201,5 +201,3 @@ as typing, because driving it would let you change your own security settings.
 Read the `computer-use` skill before your first call.
 
 {{WIDGET_BLOCK}}
-
-{{VERBOSITY_BLOCK}}

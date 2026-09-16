@@ -50,14 +50,16 @@ DEFAULT_WARM_SET_CAP: int = WARM_SET_CAP_AUTO
 # clamped by this: an operator who names a number has made the budget decision
 # themselves, including a number larger than this.
 #
-# 8 is a judgement, not a measurement: comfortably above the 5 this default used
-# to be (so no install gets a tighter warm set than it had), and still in the
-# range a single renderer has been seen to carry. The per-pane cost that bounds
+# 10 is a product target, not a measurement: it is the fleet size the Remote
+# Crew surface is designed around, raised from 8 without removing the resource
+# bound. Ten warm panes has not been measured on a single renderer; the number
+# an install can actually carry is still the operator's call via an explicit
+# cap. The per-pane cost that bounds
 # it is CPU and worker threads rather than heap -- each pane is a full SPA with
 # its own polling and WebSocket, and a pane the user opens a diff in spawns its
 # own highlighter worker pool (see website/src/main.tsx on why those are no
 # longer spawned eagerly).
-WARM_SET_CAP_AUTO_CEILING: int = 8
+WARM_SET_CAP_AUTO_CEILING: int = 10
 
 # First local loopback port handed out for an SSH ``-L`` forward. The port
 # allocator increments from here, skipping ports already in use and ports the

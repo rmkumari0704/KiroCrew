@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from source_corpus import repo_files_named, repo_root
 from yaml_helpers import load_with
 
 from kiro_crew import history
@@ -871,19 +872,22 @@ class TestTheRepoSkillFileCorpus:
         }
     )
 
-    @staticmethod
-    def _repo_root() -> Path:
-        return Path(__file__).resolve().parent.parent
-
     @classmethod
     def _skill_files(cls) -> list[tuple[str, str]]:
-        root = cls._repo_root()
+        """Every ``SKILL.md`` the checkout holds, generated trees excluded.
+
+        Enumerated through ``source_corpus.repo_files_named`` rather than
+        ``rglob``, which also reaches into a nested worktree and reported ITS copy
+        of a shipped skill as the offender below. The generated-tree filter stays
+        here because that scope is this gate's contract, not the enumerator's.
+        """
+        root = repo_root()
         out: list[tuple[str, str]] = []
-        for path in sorted(root.rglob("SKILL.md")):
-            rel = path.relative_to(root).as_posix()
-            if any(part in ("node_modules", ".git", "dist", "build") for part in path.parts):
+        for path in repo_files_named("SKILL.md"):
+            rel = path.relative_to(root)
+            if any(part in ("node_modules", "dist", "build") for part in rel.parts):
                 continue
-            out.append((rel, path.read_text(encoding="utf-8")))
+            out.append((rel.as_posix(), path.read_text(encoding="utf-8")))
         return out
 
     @staticmethod

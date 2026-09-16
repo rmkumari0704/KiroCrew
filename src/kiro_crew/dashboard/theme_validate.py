@@ -19,6 +19,7 @@ from typing import Any
 
 from kiro_crew.config.loader import config_dir
 from kiro_crew.hooks import safe_read_file_bytes_nolink
+from kiro_crew.slugs import slug_hash_fallback
 
 # ── Custom Themes — validation & parsing core ──
 
@@ -190,7 +191,7 @@ def _slugify_theme_name(name: str) -> str:
     """Convert a theme name to a filesystem-safe slug."""
     slug = re.sub(r"[^a-z0-9\-]", "-", name.lower()).strip("-")
     slug = re.sub(r"-+", "-", slug)
-    return slug[:_THEME_SLUG_MAX_LEN] or "custom"
+    return slug[:_THEME_SLUG_MAX_LEN] or slug_hash_fallback(name, "custom")
 
 
 def _safe_theme_slug(slug: str) -> str | None:

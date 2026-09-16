@@ -49,6 +49,7 @@ from kiro_crew.dashboard.theme_validate import (
     _overrides_layout_violation,
     _resolve_theme_asset,
     _safe_theme_slug,
+    _slugify_theme_name,
     _sniff_audio,
     _theme_asset_descriptor,
     _validate_audio_manifest,
@@ -1821,3 +1822,20 @@ class TestCssParserCorpus:
         assert any(c["installAccepts"] for c in cases)
         assert any(not c["installAccepts"] for c in cases)
         assert any(c["installAccepts"] and not c["runtimeKeeps"] for c in cases)
+
+
+# ── _slugify_theme_name hash fallback ──────────────────────────────
+
+
+def test_theme_slug_non_ascii_names_derive_distinct_stable_slugs() -> None:
+    korean = _slugify_theme_name("\ub2e4\ud06c \ubaa8\ub4dc")
+    russian = _slugify_theme_name("\u0442\u0451\u043c\u043d\u0430\u044f \u0442\u0435\u043c\u0430")
+    assert korean.startswith("custom-")
+    assert korean != russian
+    assert korean == _slugify_theme_name("\ub2e4\ud06c \ubaa8\ub4dc")
+    # The fallback stays filesystem-safe by the repo's own traversal guard.
+    assert _safe_theme_slug(korean) == korean
+
+
+def test_theme_slug_ascii_names_are_unchanged() -> None:
+    assert _slugify_theme_name("Solarized Dark") == "solarized-dark"

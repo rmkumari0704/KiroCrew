@@ -32,6 +32,7 @@ from enum import Enum
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -40,6 +41,7 @@ from kiro_crew.acp_backends import (
 from kiro_crew.providers.mirrors.base import AgentConfigMirror
 from kiro_crew.providers.mirrors.claude_code import ClaudeCodeMirror
 from kiro_crew.providers.mirrors.codex import CodexMirror
+from kiro_crew.providers.mirrors.goose import GooseMirror
 from kiro_crew.providers.mirrors.opencode import OpenCodeMirror
 
 
@@ -180,6 +182,7 @@ MIRRORS: dict[str, type[AgentConfigMirror]] = {
     ACP_BACKEND_CLAUDE: ClaudeCodeMirror,
     ACP_BACKEND_CODEX: CodexMirror,
     ACP_BACKEND_OPENCODE: OpenCodeMirror,
+    ACP_BACKEND_GOOSE: GooseMirror,
 }
 
 #: Every backend this build can spell, and how its MCP surface is reached.
@@ -289,6 +292,38 @@ PROJECTIONS: dict[str, McpProjection] = {
             "-- the one channel this harness is shown to read today"
         ),
         tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+    ),
+    ACP_BACKEND_GOOSE: McpProjection(
+        kind=ProjectionKind.MIRROR,
+        reason="goose.py -- the second single-binary spec harness to carry a session "
+        "array, and the entry that shows what a MEASURED channel claim costs versus an "
+        "inferred one. Its initialize advertises mcpCapabilities of http and sse with no "
+        "stdio flag, the same reading that once had opencode declared no-channel, and it "
+        "is the same non-evidence: ACP's McpCapabilities schema has exactly two boolean "
+        "fields and no stdio field, so a conforming agent cannot advertise stdio. Rather "
+        "than infer either way this was driven end to end against goose 1.50.1: the "
+        "element acp.session_mcp.acp_server_element already emits is accepted, and the "
+        "named stdio child is asked initialize, notifications/initialized, tools/list AND "
+        "tools/call by goose itself, with the tool's own result arriving on "
+        "tool_call_update -- so the transport is mounted, the tools are enumerated and the "
+        "tool is REACHABLE, which is the claim pi's entry above cannot make. Crew writes "
+        "no goose MCP config: the only other thing it supplies is GOOSE_MODE in the "
+        "child's environment, carrying the permission mode and nothing else. One hazard "
+        "rides along and it is the inverse of opencode's whole-session strictness: an "
+        "element whose command cannot start is DROPPED rather than failing session/new, so "
+        "an unstartable pooled broker stub costs no session and leaves a healthy-looking "
+        "one carrying none of Crew's tools",
+        # WHOLE-SERVER as a CONSERVATIVE choice, which is the one way this differs from
+        # opencode's identical verdict. goose puts the pair on the wire, as
+        # _meta.goose.toolCall.toolName and extensionName on the tool_call frame, and Crew
+        # reads it -- the identity table in acp._dispatch carries a row for that channel,
+        # so the per-call deny path does match a denied pair here. The half still missing
+        # is the projection side: no per-tool form mounts a narrowed server with its denied
+        # tools filtered out of the array, the way codex's does. Withholding the server
+        # whole, Crew's own control plane included, is the direction that cannot leave a
+        # switched-off tool reachable while that is true. Follow-up: a per-tool projection
+        # for this harness, after which the verdict is TRANSLATED per tool.
+        per_tool_deny=PerToolDeny.WHOLE_SERVER,
     ),
 }
 

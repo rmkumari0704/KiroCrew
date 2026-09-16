@@ -1,3 +1,5 @@
+import { getCurrentSearchRange } from './domHighlight'
+
 /** Threshold (ms) below which consecutive search-nav steps are treated as
  * "rapid stepping" and snap instantly instead of smooth-scrolling. */
 export const RAPID_STEP_MS = 250
@@ -226,13 +228,14 @@ export function glideOnceStep(
 }
 
 /**
- * Center the active search occurrence (`mark.search-current`) in the viewport,
+ * Center the active search occurrence (the Range `domHighlight` paints as the
+ * current match) in the viewport,
  * re-applying across frames so it CONVERGES as the target settles. A far jump
  * mounts an unmeasured virtualized row, a match inside a collapsed turn
  * triggers a ~300ms expand animation, and a match near a widget shifts as the
  * widget builds (~450ms) — all keep moving layout after an initial scroll, so a
  * single (or short frame-capped) attempt lands on a stale offset (often
- * top-of-list). This re-centers until the mark's viewport position stops moving
+ * top-of-list). This re-centers until the match's viewport position stops moving
  * (row measured, expansion + build finished), then stops — landing on the
  * correct spot on the FIRST click. A ~2s wall-clock backstop guarantees a
  * genuinely unreachable match still terminates rather than spinning.
@@ -336,25 +339,28 @@ export function scrollCurrentMatchIntoView(
   const { maxMs = CONVERGE_MAX_MS, now = defaultNow, raf = defaultRaf } = opts
   const target: EventTarget | undefined =
     typeof window !== 'undefined' ? window : undefined
-  const scope: ParentNode | null =
-    root ?? (typeof document !== 'undefined' ? document : null)
-  let mark: HTMLElement | null = null
+  let match: Range | null = null
   // Hoisted so `cleanup` (referenced by pollRowSettled's onEnd) can name it.
   function onUser() { stop() }
   let detachUser: () => void = () => {}
   const cleanup = () => { detachUser() }
   const stop = pollRowSettled({
-    // Reading the mark's position IS the convergence signal; scrolling is the
-    // step. While the mark is absent (off-window row not mounted), measure
-    // returns null and the poll idles until the backstop.
+    // Reading the match's position IS the convergence signal; scrolling is the
+    // step. The match is a Range painted by domHighlight, not an element: the
+    // transcript never wraps matched text in a node of its own (see
+    // `applySearchHighlights`), so there is no `<mark>` to query. While the
+    // range is absent (off-window row not mounted, or its text node replaced
+    // by a re-render and not yet re-walked), measure returns null and the poll
+    // idles until the backstop.
     measure: () => {
-      mark = (scope?.querySelector('mark.search-current') as HTMLElement | null) ?? null
-      if (!mark) return null
-      return typeof mark.getBoundingClientRect === 'function'
-        ? mark.getBoundingClientRect().top
+      const r = getCurrentSearchRange()
+      match = r && (!root || root.contains(r.startContainer)) ? r : null
+      if (!match) return null
+      return typeof match.getBoundingClientRect === 'function'
+        ? match.getBoundingClientRect().top
         : 0
     },
-    step: () => { mark?.scrollIntoView?.({ block: 'center' }) },
+    step: () => { if (match) scrollRangeToCenter(match) },
     raf,
     now,
     maxMs,
@@ -362,4 +368,38 @@ export function scrollCurrentMatchIntoView(
   })
   detachUser = attachUserScrollIntent(target, onUser)
   return () => { stop(); cleanup() }
+}
+
+/**
+ * Scroll so `range` sits at the vertical centre of every scrollable ancestor
+ * and of the viewport — what `Element.scrollIntoView({ block: 'center' })` does
+ * for an element, which `Range` does not offer. Each scroller is adjusted by
+ * the range's offset from that scroller's own centre, and the adjustment the
+ * scroller actually accepted (a clamped `scrollTop` moves less than asked) is
+ * carried outward so the enclosing scrollers centre the range's final position.
+ *
+ * Scrollers are detected by computed `overflow-y` plus real overflow, so a
+ * paragraph taller than the scroller still centres on the match itself rather
+ * than on the paragraph.
+ */
+export function scrollRangeToCenter(range: Range): void {
+  if (typeof getComputedStyle !== 'function') return
+  const rect = range.getBoundingClientRect()
+  let mid = rect.top + rect.height / 2
+  const start = range.startContainer
+  let el: HTMLElement | null =
+    start.nodeType === Node.ELEMENT_NODE ? (start as HTMLElement) : start.parentElement
+  for (; el; el = el.parentElement) {
+    if (el.scrollHeight <= el.clientHeight) continue
+    const overflowY = getComputedStyle(el).overflowY
+    if (overflowY !== 'auto' && overflowY !== 'scroll') continue
+    const box = el.getBoundingClientRect()
+    const before = el.scrollTop
+    el.scrollTop = before + (mid - (box.top + box.height / 2))
+    mid -= el.scrollTop - before
+  }
+  if (typeof window !== 'undefined' && typeof window.scrollBy === 'function') {
+    const delta = mid - window.innerHeight / 2
+    if (Math.abs(delta) >= 1) window.scrollBy(0, delta)
+  }
 }

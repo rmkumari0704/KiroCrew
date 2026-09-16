@@ -398,12 +398,21 @@ def poc_argv(poc: str, report_path: Path | None = None) -> tuple[list[str], str]
         argv = shlex.split(body)
     except ValueError:
         return None
-    # ``python3`` is the documented canonical interpreter token in finding PoCs.
-    # On Windows it can resolve to the Microsoft Store app-execution alias even
-    # while this verifier is already running under a real Python. Resolve that
-    # exact token to the active interpreter; do not broaden this to ``python``,
-    # versioned names, paths, or any other program supplied by the finding.
-    if sys.platform == "win32" and argv and argv[0] == "python3":
+    # ``python3`` is the documented canonical interpreter token in finding PoCs,
+    # and resolving it through PATH is unsafe on every platform, for two
+    # different reasons. On Windows it can reach the Microsoft Store
+    # app-execution alias even while this verifier already runs under a real
+    # Python. On POSIX it can reach a version-manager shim (mise, asdf, pyenv),
+    # which cannot read its own config under the ``HOME`` that ``child_env``
+    # redirects into the worktree, so it falls back to "``python3`` on PATH" --
+    # itself -- and re-dispatches until the timeout kills the proof. Resolving
+    # this one token to the active interpreter is therefore platform-independent
+    # by design: gating it on a platform would leave the same class of failure
+    # standing on the others, which the rules of engagement forbid. Do not
+    # broaden it to ``python``, versioned names, paths, or any other program the
+    # finding supplies -- that narrowness is the boundary keeping a finding from
+    # choosing the program that runs.
+    if argv and argv[0] == "python3":
         argv[0] = sys.executable
     return (argv, kind) if argv else None
 

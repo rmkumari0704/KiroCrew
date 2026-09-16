@@ -1305,7 +1305,7 @@ class TestSearchForContext:
         async def _direct(fn, *args, **kwargs):
             return fn(*args, **kwargs)
 
-        def _retriever(_store, embedder=None, *, embed_sig=None):
+        def _retriever(_store, embedder=None, *, embed_sig=None, revalidator=None, binding_resolver=None):
             seen["embedder"] = embedder
             seen["embed_sig"] = embed_sig
             return MagicMock(search=MagicMock(return_value=[]))
@@ -1329,7 +1329,7 @@ class TestSearchForContext:
         async def _direct(fn, *args, **kwargs):
             return fn(*args, **kwargs)
 
-        def _retriever(_store, embedder=None, *, embed_sig=None):
+        def _retriever(_store, embedder=None, *, embed_sig=None, revalidator=None, binding_resolver=None):
             seen["embedder"] = embedder
             seen["embed_sig"] = embed_sig
             return MagicMock(search=MagicMock(return_value=[]))

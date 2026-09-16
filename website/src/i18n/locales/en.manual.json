@@ -1642,7 +1642,9 @@
     },
     "appstore": {
       "categoryRail": {
-        "all_apps": "All apps"
+        "all_apps": "All apps",
+        "curated_reviewed_by_the_kiro_crew_team": "Reviewed by the {{productName}} team",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "Community-listed, not vetted by the {{productName}} team"
       },
       "installedAppCard": {
         "app_cannot_be_opened_kirocrew_is_running_in_a_he": "App cannot be opened — {{productName}} is running in a headless environment.",
@@ -1687,6 +1689,10 @@
         "working": "Trusting and enabling...",
         "failed": "“{{app}}” could not be turned on, but trust may already have been saved. Choose Try again, or open Settings → Security → Trusted third-party apps to check and remove it.",
         "failed_generic": "“{{app}}” could not be turned on, and nothing was changed. Choose Try again, or check {{productName}}'s logs."
+      },
+      "registryTier": {
+        "curated": "Team reviewed",
+        "community": "Not vetted"
       }
     },
     "artifactBody": {
@@ -2547,7 +2553,12 @@
       "name_is_taken_by_a_build_pinned_registry": "\"{{name}}\" is the name of a registry this build provides — choose another",
       "included_with_this_installation": "Included with this installation",
       "trusted_source": "Trusted source",
-      "trusted_source_clones_with_your_git_credentials": "Trusted source — apps from this registry clone with your Git credentials."
+      "trusted_source_clones_with_your_git_credentials": "Trusted source — apps from this registry clone with your Git credentials.",
+      "curated_tip_credentialed": "Reviewed by the {{productName}} team before listing. Apps clone with your Git credentials.",
+      "curated_tip_credential_free": "Reviewed by the {{productName}} team before listing. Apps clone without your Git credentials.",
+      "community_tip_credentialed": "Listed by contributors after a lighter review. Not vetted by the {{productName}} team. Apps still clone with your Git credentials, so install only apps you recognise.",
+      "community_tip_credential_free": "Listed by contributors after a lighter review. Not vetted by the {{productName}} team. Install only apps you recognise.",
+      "registry_id": "id: {{id}}"
     },
     "remoteArtifactCard": {
       "clone_failed": "Clone failed",
@@ -3282,6 +3293,7 @@
     },
     "useWebSocket": {
       "response_ready": "Response ready",
+      "waiting_for_input": "Waiting for your input",
       "a_task_needs_your_decision": "A task needs your decision",
       "approval_required": "Approval Required",
       "tool_approval": "Tool approval: {{name}}",
@@ -5614,8 +5626,8 @@
         "category_agent_description": "When the agent proactively messages you outside a chat",
         "category_all": "Default (all categories)",
         "category_all_description": "Fallback sound when no category-specific override is set",
-        "category_approval": "Approval",
-        "category_approval_description": "Tool approval requests",
+        "category_approval": "Approvals and questions",
+        "category_approval_description": "When the agent needs a tool approval or an answer",
         "category_cron": "Cron",
         "category_cron_description": "Scheduled job completions",
         "category_heartbeat": "Heartbeat",
@@ -5628,8 +5640,8 @@
         "category_subagent_description": "Background subagent completions",
         "category_taskrunner": "Tasks",
         "category_taskrunner_description": "Task Runner completions",
-        "category_turn": "Agent replies",
-        "category_turn_description": "When the agent finishes a turn in any chat",
+        "category_turn": "Conversation handoffs",
+        "category_turn_description": "When a conversation finishes or pauses for your input",
         "channel_default": "Channel default",
         "notifications_for": "Notifications for {{name}}",
         "preset_blip": "Blip",
@@ -6557,6 +6569,36 @@
       "weekdays_at": "Weekdays · {{time}}",
       "weekly_on_day": "Weekly · {{day}} {{time}}",
       "weekly_on_days": "Weekly · {{days}} {{time}}"
+    },
+    "toolCallTitle": {
+      "and_more_one": "{{title}} and {{count}} more",
+      "and_more_other": "{{title}} and {{count}} more",
+      "build": "Build",
+      "create": "Create {{path}}",
+      "edit": "Edit {{path}}",
+      "fetch": "Fetch {{host}}",
+      "find_files": "Find files '{{pattern}}'",
+      "find_files_in": "Find files '{{pattern}}' in {{path}}",
+      "git": "Git {{sub}}",
+      "git_path": "Git {{sub}} {{path}}",
+      "github": "GitHub {{noun}} {{verb}}",
+      "github_api": "GitHub API {{path}}",
+      "github_target": "GitHub {{noun}} {{verb}} {{target}}",
+      "install_dependencies": "Install dependencies",
+      "lint": "Lint",
+      "list_files": "List files",
+      "list_files_in": "List files in {{path}}",
+      "mcp_with_arg": "{{title}}: {{arg}}",
+      "print": "Print",
+      "read": "Read {{path}}",
+      "read_range": "Read {{path}} ({{from}}–{{to}})",
+      "request": "{{method}} {{host}}",
+      "run_script": "Run script {{name}}",
+      "run_tests": "Run tests",
+      "search": "Search '{{query}}'",
+      "search_in": "Search '{{query}}' in {{path}}",
+      "search_web": "Search web for '{{query}}'",
+      "view_image": "View image {{path}}"
     }
   },
   "store": {
@@ -6565,6 +6607,7 @@
       "session_open_error_named": "“{{name}}” could not be opened.",
       "session_open_error": "The session could not be opened.",
       "session_gone_open_failed_named": "“{{name}}” was deleted and cannot be opened.",
+      "truncated_chars": "…({{count}} characters truncated — full output on reload)",
       "truncated": "…(truncated)"
     }
   },

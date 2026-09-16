@@ -1157,33 +1157,39 @@ def test_a_proof_that_errors_rather_than_fails_is_needs_human(
     assert verdict_rows(ledger, db, finding_id) == [("verifier", "needs-human")]
 
 
-def test_windows_resolves_only_the_canonical_python3_command(verify_finding, monkeypatch):
-    """The Store alias must not inherit into a command proof on Windows.
+@pytest.mark.parametrize(
+    ("platform", "active_python"),
+    (
+        ("win32", r"C:\runtime\.venv\Scripts\python.exe"),
+        ("linux", "/runtime/.venv/bin/python"),
+        ("darwin", "/runtime/.venv/bin/python"),
+    ),
+)
+def test_the_canonical_python3_command_resolves_on_every_platform(
+    verify_finding, monkeypatch, platform, active_python
+):
+    """PATH resolution of ``python3`` is untrustworthy on all three platforms.
 
-    Resolution is deliberately narrower than finding a convenient Python: the
-    documented canonical token means "this verifier's Python", while every
-    other executable name remains untrusted finding input for ``Popen`` to
-    resolve under the existing child environment.
+    Windows can reach the Store app-execution alias; POSIX can reach a
+    version-manager shim that loops under the redirected ``HOME``. So the
+    rewrite is not gated on ``sys.platform`` at all -- pinning that here is what
+    keeps the gate from coming back for one platform and leaving the others.
+
+    Resolution stays deliberately narrower than finding a convenient Python: the
+    documented canonical token means "this verifier's Python", while every other
+    executable name remains untrusted finding input for ``Popen`` to resolve
+    under the existing child environment.
     """
-    active_python = r"C:\runtime\.venv\Scripts\python.exe"
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setattr(sys, "executable", active_python)
 
     canonical = verify_finding.poc_argv('cmd::python3 -c "raise SystemExit(3)"')
     foreign = verify_finding.poc_argv('cmd::python3.12 -c "raise SystemExit(3)"')
+    bare = verify_finding.poc_argv("cmd::python -c pass")
 
     assert canonical == ([active_python, "-c", "raise SystemExit(3)"], "cmd")
     assert foreign == (["python3.12", "-c", "raise SystemExit(3)"], "cmd")
-
-
-def test_posix_leaves_the_canonical_python3_command_unchanged(verify_finding, monkeypatch):
-    """POSIX keeps PATH-based ``python3`` resolution exactly as documented."""
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(sys, "executable", "/unrelated/active/python")
-
-    parsed = verify_finding.poc_argv("cmd::python3 -c pass")
-
-    assert parsed == (["python3", "-c", "pass"], "cmd")
+    assert bare == (["python", "-c", "pass"], "cmd")
 
 
 def test_a_nonzero_command_proof_confirms_and_a_zero_one_rejects(

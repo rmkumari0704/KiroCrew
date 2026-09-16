@@ -113,6 +113,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "source-content digests remain server-side.",
     ),
     (
+        "Session ledger entries",
+        "session_ledger_emit.py",
+        "Message bodies written to the append-only per-session ledger under "
+        "`<home>/ledgers/sessions/` -- what the user typed and what the model "
+        "answered. This sink is a FILE rather than "
+        "a response, so what it writes outlives the process and is read back "
+        "later by folds and the session panel; that makes it an output boundary "
+        "with a longer reach than an egress response, not a lesser one. Every "
+        "body passes the shared exfiltration-URL then credential chain in the "
+        "emitter rather than at its call sites, so a new call site cannot forget, "
+        "and a redaction that fails writes the empty string instead of the input.",
+    ),
+    (
         "Memory recovery responses",
         "dashboard/handlers/memory_admin.py",
         "Retired episode text and supersession references, plus backup and restore "
@@ -1805,9 +1818,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "apps/builtins/code_review_sage/backend/routes.py",
         # Dev Fleet's redactor wrapper and the cohesive owners that apply it to
         # the app's own API/state/worktree surfaces, all carrying the same
-        # non-core-egress classification.
+        # non-core-egress classification. `gateway_routes` is the same surface
+        # served from the gateway process (the live-target cutover), redacting
+        # the target path and error text bound for its SEL record and JSON reply.
         "apps/builtins/dev_fleet/runtime.py",
         "apps/builtins/dev_fleet/http_api.py",
+        "apps/builtins/dev_fleet/gateway_routes.py",
         "apps/builtins/dev_fleet/fleet_state.py",
         "apps/builtins/dev_fleet/repository.py",
         "apps/builtins/dev_fleet/live.py",

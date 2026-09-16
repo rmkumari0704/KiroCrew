@@ -1808,7 +1808,7 @@ class DashboardConfig:
     url: str = ""                  # public URL for the dashboard (used in Slack links)
     # ... restore_sessions / bot_name / avatar / widget_density / auto_open_browser / etc.
     default_memory_mode: str = "persistent"  # persistent | incognito | temporary; default for user-created dashboard chats only
-    verbosity: str = "default"     # "default" | "concise" | "ultra"; "concise" injects a brevity guideline block into the agent prompt ({{VERBOSITY_BLOCK}}), "ultra" injects a stricter punchline-first block (answer within a ~3-sentence opening, then scannable detail). Read/written via GET/PUT /api/dashboard/config (rejects values other than default|concise|ultra). Resolved for all transports in ContextBuilder._resolve_prompt_templates; an unrecognized value injects an empty block.
+    verbosity: str = "default"     # "default" | "concise" | "ultra" | "answer_only"; anything but "default" injects a [RESPONSE PREFERENCES] block into SESSION CONTEXT for every agent (see "Response verbosity reaches every agent" below). Read/written via GET/PUT /api/dashboard/config (rejects values outside the enum). An unrecognized value injects nothing.
     theme_mode: str = ""           # "dark" | "light" | "system"; empty = unset (frontend falls back to localStorage or "system")
     theme_color: str = ""          # color-theme slug (e.g. "kiro", "emerald", "monokai"); empty = unset
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
@@ -2360,6 +2360,59 @@ no-title sentinels on every path, matched case-insensitively, alone or with a
 punctuation-separated reason on one line (`_is_verdict_reply`) -- while a real
 title that merely opens with the word ("SKIP and KEEP handling", "KEEP-ALIVE
 header bug") survives.
+
+### Response verbosity reaches every agent
+
+`dashboard.verbosity` describes how the PERSON wants replies to read, so it is
+delivered as session-context chrome — the same class as `[CURRENT DATE]` and
+`[UI LANGUAGE]` — not as a token an agent prompt has to opt into.
+`context.py::_build_response_preferences_section(cfg)` renders the level's
+rules (`_reply_style_rules`) inside a `[RESPONSE PREFERENCES — MANDATORY]` …
+`[END RESPONSE PREFERENCES]` frame whose one sentence of preamble states that the
+rules bind every reply, on every surface, for every agent, and outrank any
+response-style guidance in the agent prompt. `default` and any unknown value
+render `""`, so an install that never touched the setting sees byte-identical
+context.
+
+`build_message` mints the frame as its own trusted part on every session-start
+turn (full, `minimal_context` cron, and slim resume), placed AFTER the scrubbed
+session-context block rather than inside it, so a built-in agent, a custom
+agent spec and a cron digest all receive it at the same once-per-session cost.
+The placement is load-bearing: both frame markers are in
+`_STRUCTURAL_MARKER_RES`, so a forged frame inside memory, channel history or a
+peer's message is rewritten to `[marker-removed]`, and a frame that rode inside
+the scrubbed block would be rewritten too. The genuine frame is therefore
+minted only after the scrub, exactly as the post-compaction skills index is.
+
+A `subagent:` session is the one kind that does NOT receive the frame
+(`_response_preferences_apply`, resolved through the same runtime-source seam
+as `[RUNTIME]`): its final message is read by its parent agent, which needs the
+caveats and edge cases the `ultra` and `answer_only` levels tell the writer to
+drop.
+
+Session-start context is what compaction drops, so `build_message` re-injects
+the block on a continuing turn with `needs_reinjection` set, beside the skills
+index, under a `[REINJECTED AFTER COMPACTION — response preferences]` line. It
+re-reads the setting at that moment: a level changed mid-session is what comes
+back, not the pre-compaction copy. The messaging pipeline
+(`messaging/dispatch.py`) consumes and forwards that one-shot flag the way the
+dashboard chat runner does, so a channel session's compaction re-injects the
+skills index and this block.
+
+The earlier delivery — a `{{VERBOSITY_BLOCK}}` token expanded wherever an agent
+prompt carried it — is retired. No shipped prompt (`config/prompt.md`,
+`config/prompt-orchestrator.md`, the conductor/worker prompt constants in
+`agent.py`) carries the token, and `test/test_verbosity_config.py` pins that;
+`_resolve_prompt_templates` still strips a stale token from a spec copied before
+the move so the literal never reaches the model. `context_blocks._MARKERS` knows
+the frame as `response_preferences`, so the context-breakdown panel attributes
+its bytes to their own block rather than to `[UI LANGUAGE]`.
+
+`{{WIDGET_BLOCK}}` deliberately stays a prompt token. `dashboard.widget_density`
+is not a preference about the person; it describes what the rendering surface
+can show, and `_resolve_prompt_templates` already gates the block on
+`has_dashboard_surface(session_key)`, so a session with no chat window gets
+none of it whatever the prompt says. There is no author-diligence gap to close.
 
 ### Foreign-agent import onboarding state
 

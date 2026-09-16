@@ -156,9 +156,10 @@ def test_the_worker_prompt_says_only_decision_is_an_instruction(specs):
     assert "user message" in lowered
 
 
-def test_the_worker_prompt_carries_the_verbosity_placeholder(specs):
-    """Without the token the dashboard verbosity setting never reaches this agent."""
-    assert "{{VERBOSITY_BLOCK}}" in specs[WORKER_AGENT_FILENAME]["prompt"]
+def test_the_worker_prompt_does_not_carry_the_retired_verbosity_token(specs):
+    """Reply style arrives as session-context chrome for every agent; a token
+    left here would reach the model as a literal."""
+    assert "{{VERBOSITY_BLOCK}}" not in specs[WORKER_AGENT_FILENAME]["prompt"]
 
 
 def test_the_worker_prompt_says_done_is_a_claim(specs):

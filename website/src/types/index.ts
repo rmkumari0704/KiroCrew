@@ -1027,6 +1027,10 @@ export interface ChatSlot {
    *  falls back to `peer_id` + `key` for those. Never parse it to recover the local
    *  slot key: read `key`. */
   row_identity?: string
+  /** Provider session identity when it differs from the dashboard slot key. */
+  linked_session_key?: string
+  /** Prompts held for a later turn on this slot. */
+  queue_depth?: number
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
@@ -1328,7 +1332,7 @@ export interface SubagentActivity {
 
 export interface ToolActivity {
   type: string
-  text: string          // reasoning text or tool name
+  text: string          // tool name (or approval / activity label)
   purpose?: string      // tool purpose
   input?: string        // tool input (commands, file content, etc.)
   output?: string       // tool output (stdout, results, etc.)
@@ -1341,6 +1345,8 @@ export interface ToolActivity {
   rejected?: boolean     // true when approval was rejected
   kind?: string          // ACP tool kind; execute is the legacy shell signal
   is_shell?: boolean     // shell tools can expose an indeterminate live status
+  tool_name?: string     // trusted programmatic tool name (_meta.kiro.toolName), when sent
+  mcp_server?: string    // MCP server that served the call (_meta.kiro.mcpServerName), when sent
 }
 
 /** Parsed content block produced by the block assembler. */

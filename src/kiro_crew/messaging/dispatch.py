@@ -773,6 +773,11 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # exposure, and one that forgot would silently read the operator's memory.
         # The member tier was prepared before provider acquisition; unavailable
         # private memory refuses the turn instead of substituting global memory.
+        # A compaction drops session-start context. Read-and-clear the one-shot
+        # flag so this turn re-injects that context exactly once.
+        consume = getattr(sessions, "consume_needs_reinjection", None)
+        needs_reinjection = bool(consume(session_key)) if callable(consume) else False
+
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             ctx_builder.build_message,
@@ -783,6 +788,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             agent=turn.agent,
             memory_store=memory_store,
             resumed=resumed,
+            needs_reinjection=needs_reinjection,
             minimal_context=turn.minimal_context,
             runtime_source=turn.channel_type,
             context_provider=provider,

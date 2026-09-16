@@ -459,6 +459,28 @@ def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     return first_word.lower() not in QUICK_PROMPTS
 
 
+def _tool_identity_fields(event: "LLMEvent") -> dict[str, str]:
+    """``tool_name`` / ``mcp_server`` for a tool_call frame, present only when known.
+
+    Read from the trusted ``_meta.kiro`` identity the dispatcher extracted, never
+    from the title. Omitted rather than sent empty so a consumer merging a
+    refinement field-by-field keeps what the initial frame supplied, and so a
+    frame from a backend that sends no ``_meta`` carries nothing to misread. The
+    dashboard's title derivation treats both as optional and falls back to
+    parsing the title, so an absent pair never breaks a row.
+    """
+    out: dict[str, str] = {}
+    name = getattr(event, "tool_name", "")
+    server = getattr(event, "mcp_server_name", "")
+    # Only a real string is an identity; any other value (an event shape that
+    # lacks the attribute, a stand-in object) is treated as unknown.
+    if isinstance(name, str) and name:
+        out["tool_name"] = _redact_tool_field(name, limit=200)
+    if isinstance(server, str) and server:
+        out["mcp_server"] = _redact_tool_field(server, limit=200)
+    return out
+
+
 def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEvent") -> str:
     """Broadcast an auto-approved tool call via WS with redacted title. Returns redacted title."""
     title, _ = redact_exfiltration_urls(event.title)
@@ -477,6 +499,7 @@ def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEven
             "tool_call_id": tcid,
             "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
             "input_preview": _redact_tool_field(event.tool_input),
+            **_tool_identity_fields(event),
         },
     )
     return title
@@ -804,6 +827,48 @@ def subagents_attached(
     return bool(running is None or running or queued or inflight)
 
 
+def chat_done_payload(
+    state: DashboardState, slot: _ChatSlot, *, continuing: bool = False
+) -> dict[str, Any]:
+    """Describe whether a turn boundary actually hands the floor to the user.
+
+    Slot snapshots are coalesced, so a sound decision cannot use stale
+    child/plan state from the browser when this frame arrives. Read the same
+    attached-child guard that protects session teardown, including queued spawns
+    and results still being delivered. This is a notification hint only; it never
+    changes dispatch, transcript finalization, or the slot's running state.
+    """
+    # Avoid a circular import: autonudge's slot lookup imports dashboard.state.
+    from kiro_crew.autonudge import get_instance
+
+    try:
+        service = get_instance()
+        loop = service.get_by_slot(slot.key) if service is not None else None
+        workflows = getattr(state, "workflow_service", None)
+        continuing = bool(
+            continuing
+            or slot._in_stage_execution
+            or slot._pending_synthesis
+            or (slot.queue_depth and not slot._last_turn_auth_required)
+            or subagents_attached(state, slot, effective_session_key(slot), "completion_sound")
+            or (
+                workflows is not None
+                and workflows.registry.has_pending_work_for(effective_session_key(slot))
+            )
+            or (loop is not None and loop.active)
+        )
+    except Exception:
+        # Unknown activity must not announce a finished conversation, but a
+        # notification failure must never prevent the terminal frame itself.
+        logger.warning("Completion activity unavailable for slot %s", slot.key, exc_info=True)
+        continuing = True
+    return {
+        "slot": slot.key,
+        "continuing": continuing,
+        "needs_input": bool(slot._question_pending),
+    }
+
+
 def wire_session_subagent_probe(state: DashboardState) -> None:
     """Hand ``SessionManager`` the sub-agent probe its RSS ceiling consults.
 
@@ -867,6 +932,32 @@ def slack_options_slot(state: DashboardState, session_key: str) -> _ChatSlot | N
     except Exception:
         logger.debug("Slack OPTIONS slot lookup failed", exc_info=True)
         return None
+
+
+def reject_if_slot_under_construction(
+    state: DashboardState, slot: _ChatSlot
+) -> web.Response | None:
+    """A 409 for a mutating handler that reached a slot under construction.
+
+    Defense-in-depth over the construction mark. The primary protection for the
+    import path is that it RETRACTS the slot from ``_slots`` across its async
+    Layer B write/join and durable save (see ``api_chat_slot_import``), so a raw
+    ``state._slots.get(name)`` acquirer finds nothing during that tail. This check
+    is the belt-and-braces layer: it refuses any mutating handler (regenerate,
+    variant-switch, edit-resend, rewind) that resolves a slot still marked under
+    construction, keyed on ``_slots_under_construction`` rather than registration,
+    so it holds regardless of whether a given construction path retracts. Refused
+    the same way ``slot.running`` is. The hydrate loop itself is synchronous, so
+    there is no in-loop window; this guards the async finalization tail.
+
+    Returns a response to return as-is, or ``None`` to proceed.
+    """
+    if slot.key in getattr(state, "_slots_under_construction", ()):
+        return web.json_response(
+            {"error": "slot is being restored", "code": "slot_under_construction"},
+            status=409,
+        )
+    return None
 
 
 def slack_options_linked_slot(state: DashboardState | None, thread_ts: str) -> _ChatSlot | None:

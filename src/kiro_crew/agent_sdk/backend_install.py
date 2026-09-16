@@ -46,6 +46,7 @@ from typing import Callable, Dict, List, Tuple
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -85,6 +86,7 @@ COMPONENT_CODEX_ACP_ADAPTER = "codex-acp"
 #: The OpenCode binary. ONE component, and here that is not a simplification: the
 #: harness serves ACP itself, so there is no adapter beside it to be half-installed.
 COMPONENT_OPENCODE = "opencode"
+COMPONENT_GOOSE = "goose"
 #: The pi backend's TWO components: the ``pi-acp`` adapter Crew spawns, and the
 #: ``pi`` agent that adapter spawns in turn. Either can be absent on its own.
 COMPONENT_PI_ACP_ADAPTER = "pi-acp"
@@ -249,6 +251,35 @@ def _probe_opencode() -> BackendInstallState:
     )
 
 
+def _probe_goose() -> BackendInstallState:
+    """The goose backend needs one component, and names the installer for it.
+
+    The same single-component shape as the opencode probe above and for the same
+    reason: the binary that would be missing is the binary that serves ACP, so an
+    absent verdict names one component and one command and there is no half-installed
+    state to distinguish.
+
+    ``restart_required`` is read from the spawn path's own cache, like every seam
+    here: the binary resolves NOW, but this process already cached its absence, so a
+    session started right now still fails until the gateway restarts.
+    """
+    policy_id = _policy_id(ACP_BACKEND_GOOSE)
+    if acp_driver.goose_resolves():
+        return BackendInstallState(
+            ACP_BACKEND_GOOSE,
+            policy_id,
+            INSTALLED,
+            restart_required=acp_driver.goose_cached_negative(),
+        )
+    return BackendInstallState(
+        ACP_BACKEND_GOOSE,
+        policy_id,
+        MISSING,
+        (COMPONENT_GOOSE,),
+        acp_driver.goose_install_command(),
+    )
+
+
 def _probe_codex() -> BackendInstallState:
     """The Codex backend needs one component, and names it when it is absent.
 
@@ -323,6 +354,7 @@ _PROBES: Dict[str, Callable[[], BackendInstallState]] = {
     ACP_BACKEND_CLAUDE: _probe_claude,
     ACP_BACKEND_CODEX: _probe_codex,
     ACP_BACKEND_OPENCODE: _probe_opencode,
+    ACP_BACKEND_GOOSE: _probe_goose,
     ACP_BACKEND_PI: _probe_pi,
 }
 

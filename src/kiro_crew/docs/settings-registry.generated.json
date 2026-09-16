@@ -1006,18 +1006,18 @@
       "configKey": "instances.enabled"
     },
     {
-      "id": "notifications.sound-category-turn",
-      "label": "Agent replies",
-      "tab": "notifications",
-      "route": "/settings/notifications?highlight=notifications.sound-category-turn",
-      "description": "When the agent finishes a turn in any chat"
-    },
-    {
       "id": "notifications.sound-category-approval",
-      "label": "Approval",
+      "label": "Approvals and questions",
       "tab": "notifications",
       "route": "/settings/notifications?highlight=notifications.sound-category-approval",
-      "description": "Tool approval requests"
+      "description": "When the agent needs a tool approval or an answer"
+    },
+    {
+      "id": "notifications.sound-category-turn",
+      "label": "Conversation handoffs",
+      "tab": "notifications",
+      "route": "/settings/notifications?highlight=notifications.sound-category-turn",
+      "description": "When a conversation finishes or pauses for your input"
     },
     {
       "id": "notifications.sound-category-cron",

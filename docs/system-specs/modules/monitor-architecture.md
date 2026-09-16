@@ -30,7 +30,7 @@ this spec states the target and that one states the present.
 | Layer | Status | Where it lives today |
 |---|---|---|
 | Subject and registry | `partial` | `monitoring/registry.py` owns kind/objective/capability data for four public pull-request kinds plus internal `gh-pr` and `github_workflow_run`; `probes/__init__.py` still has its separate dispatch branch |
-| Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural; the `irq.Probe` path remains separate |
+| Probe | `partial` | `monitoring.models.MonitorProbe` and `MonitorProbeResult` are provider-neutral and plural, and `monitoring/github_pull_request.py` batches its subjects into one GraphQL document per evidence kind; the other adapters loop internally and no driver assembles a batch, and the `irq.Probe` path remains separate |
 | Observation | `partial` | the `Observation` type and the `Severity` vocabulary live in `irq.py`; `PrWatchProbe` in `probes/gh_pr.py` emits the keys; `monitoring/` reduces a subject to one fingerprint |
 | Decision | `partial` | `decide_monitor` is IO-free but state-mutating: it coalesces successive changes to one subject over time through a window on `MonitorState` (a floor and a head-change reset) and derives its dedup comparison so an unresolved change re-asserts on a re-alert interval. It writes the window fields on the staged state and READS the alert map; the caller stamps the alert map on a wake and persists the same staged state, so decide-and-persist is a required pairing. `irq.py` keeps its own multi-signal coalescing for the cron path |
 | Persistence | `partial` | versioned in `monitoring/`; unversioned in `irq.py`, which also holds decision logic |
@@ -170,9 +170,22 @@ the read was complete, and a classified error or `None`.
 This is the single most consequential contract in this spec. A per-subject probe
 interface cannot be batched later without changing every implementation and
 every caller, and batching is not a micro-optimization here: fifty subjects read
-one at a time is roughly 150 process invocations against one query. Today
-batching is reachable only from the single out-of-session poller, for no reason
-other than the interface shape.
+one at a time is roughly 150 process invocations against one query.
+
+**Status: the GitHub pull-request probe batches; no caller passes more than one
+subject yet.** `GitHubPullRequestProvider.probe` spends one GraphQL document per
+evidence kind per chunk of at most 25 subjects, so a tick of any size up to that
+bound costs three requests instead of three per subject, and each further chunk
+adds three. It carries the (host, credential) rule as a check rather than as a
+grouping pass: the credential is the call's own argument, and a chunk is refused
+if it names two hosts. The
+other four adapters still loop internally and declare so in their own docstrings.
+What is missing is above the probe, not inside it: the in-session driver arms one
+`asyncio` task per loop in `autonudge.py`, so a tick structurally sees one
+monitor, and the out-of-session poller runs one subject per cron job through
+`irq.Probe.observe`, which is singular. A batch therefore has no assembler; that
+is a driver change, and it belongs with the consolidation rather than with the
+probe.
 
 Rules:
 
@@ -180,7 +193,14 @@ Rules:
   plural signature and loops internally, so the caller never encodes the
   difference.
 - One query per (host, credential) per tick. Subjects sharing a credential share
-  the query.
+  the query. An adapter satisfies this with a CHECK, not with a grouping pass: a
+  pass that sorts subjects into per-host queries is machinery for a case its own
+  target gate cannot construct, so it would ship unexercised, while a check is
+  exercised on every call and fails closed the day a second host is accepted. A
+  read whose failures are separate is a separate query: the GitHub
+  adapter keeps its load-bearing primary read apart from its two supplemental
+  ones, because a document that selects the check rollup hands its lifecycle
+  facts to a missing Checks permission.
 - A partial failure degrades only the subjects it covers. One unreadable subject
   must not fail the batch.
 - Every error is classified before it leaves this layer. An unclassified failure
@@ -521,3 +541,52 @@ an anti-pattern outright. Both current implementations share this deviation, and
 it is not resolved here: the change is larger than this consolidation and belongs
 in its own proposal. It is recorded so a reader does not mistake the omission for
 an argument that same-session wakes are correct.
+
+## The two arming tools read in the wrong order, and the names stay
+
+`monitor_start` arms the in-session timer. `monitor_watch` arms the observation-gated
+probe. Read cold, that is backwards: `start` is the generic primary verb, so the older
+timer reads as the default way to arm a monitor and the newer, cheaper, zero-token
+probe reads as a variant of it. A reader picking by name picks the expensive one.
+`patrol` would say what the timer actually does -- a watch waits and reports when a
+fact changes, a patrol walks the route every interval whether or not anything did --
+and the shipped conductor prompts already use that word for it.
+
+The names stay anyway, and the reason is worth more than the fix would have been.
+
+**A published tool name is a key that other people's persisted records were written
+against, and every one of those records is a decision that silently changes meaning
+when the key changes.** Restrictions are the dangerous half: a persisted rule naming
+a tool that no longer exists does not fail loudly, it stops matching. The capability
+the operator switched off comes back on, and nothing at the call site says so.
+
+Kiro Crew resolves tool restrictions at several name-keyed surfaces, at different
+lifecycle stages, in different shapes:
+
+| Site | Lifecycle stage | Shape | Reachable from code |
+|---|---|---|---|
+| `mcp_shared._resolve_excluded_tools` | per call, cached per session | flat name set from `managedToolPolicy.exclude` | yes |
+| the same function's fail-open returns | before the exclude list is parsed | returns an empty set | nothing to migrate; withholds every exclusion equally |
+| `acp/kas_agents.to_client_custom_agent` | startup projection, before the session exists | `excludedTools` list relayed to the agent host | yes |
+| `acp/session_mcp.session_mcp_disabled_tools` | session projection: Claude `permissions.deny`, codex `rawInput.server`/`tool` | `(server, tool)` pairs, unioned from the agent spec AND the dashboard-written global `mcp.json` | yes |
+| `agent._WORKER_MIRRORED_SHAPES` | derive-time copy | copies the persisted key | copies rather than resolves, so a rewrite here would alter a user's stored value |
+| `GET /api/session-tool-policy` | on request | the raw persisted rule | deliberately raw, so an operator can see a stale spelling and re-key it |
+| a hand-written block in an on-disk profile | the backend reads the file itself | unknown to this repo | **no** |
+
+The last row is what settles it. `acp/kas_agents.py` states the boundary: a
+hand-written block "is not ignored, just not Crew's to relay: it lives in the profile
+on disk, which the backend reads itself when Crew is not injecting an agent over the
+wire." No code here composes that file, so no migration can expand a retired name in
+it and nothing can warn the operator holding one.
+
+So the best achievable end state for renaming a published tool is a known silent
+fail-open that cannot be closed -- not a step on the way to a complete job, but the
+complete job's residue. A rename of a published name is therefore a policy migration
+with a permanent remainder, not a legibility change, and it should be priced that way
+before it is approved rather than discovered one surface at a time.
+
+Weighed against that: the mispick this rename would prevent has not been observed.
+
+What remains available, because none of it is name-keyed: the tool descriptions, this
+spec, and the prompts that choose between the two. A caller reading `monitor_start`'s
+description learns it is the timer without the name having to carry it.

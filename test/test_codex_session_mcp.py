@@ -1140,9 +1140,12 @@ class TestSpecDisabledToolRefusal:
         from kiro_crew.acp import client as client_mod
 
         body = inspect.getsource(client_mod.AcpClient.send_message_stream)
-        assert "if self._spec_denied_tools:" in body
+        # The predicate is true on every session with a deny set (and on a harness
+        # whose identity channel is judged -- see _judges_permission_requests).
+        assert "if self._judges_permission_requests:" in body
         assert "self._extract_tool_event(msg)" in body
-        # ...and with no deny set, the stats-only tracker every other backend had.
+        # ...and on a session that judges nothing, the stats-only tracker every other
+        # backend had.
         assert "self._track_tool_call(msg)" in body
 
     def test_a_dashboard_toggle_on_the_control_plane_is_honoured(self, tmp_path, agents_dir):

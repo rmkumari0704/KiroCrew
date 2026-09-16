@@ -2392,6 +2392,14 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 }
 
 /* ── Search highlights ── */
+/* `.search-match` / `.search-current` style the <mark> elements React renders
+   itself (highlightText). The transcript find bar paints matched text through
+   the CSS Custom Highlight API instead (utils/domHighlight): the bubbles are
+   react-markdown output, and wrapping a match there would split text nodes
+   React owns. `::highlight()` honors background-color and color everywhere the
+   API exists, while text-decoration is not painted by every engine, so the
+   current match is told apart by its stronger fill alone rather than the
+   outline the <mark> variant carries. */
 .search-match {
   background-color: var(--search-highlight);
   border-radius: 2px;
@@ -2403,6 +2411,12 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   padding: 0 1px;
   outline: 2px solid var(--search-highlight-current-border);
   outline-offset: 1px;
+}
+::highlight(mc-chat-match) {
+  background-color: var(--search-highlight);
+}
+::highlight(mc-chat-current) {
+  background-color: var(--search-highlight-current);
 }
 
 /* Preview find (MarkdownPanel) uses the CSS Custom Highlight API — paints over

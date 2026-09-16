@@ -23,6 +23,14 @@ Chrome, Firefox, Safari and Edge. Use standard Web APIs only, and guard the
 browser-specific ones (`typeof Notification !== 'undefined'`): an unguarded API
 throws at module scope, so the page renders blank rather than degrading.
 
+Text inside a React-rendered subtree (react-markdown output, the chat bubbles,
+the markdown preview) is painted with the CSS Custom Highlight API
+(`CSS.highlights` + `Range`, styled by `::highlight()`), never by inserting a
+`<mark>` around it: splitting a React-owned text node breaks the next React
+commit that touches it. The API needs Chrome/Edge 105, Safari 17.2 or Firefox
+140; older browsers paint no highlight, while match counting and stepping to
+the current match keep working (`utils/domHighlight.ts`).
+
 ## Shared components
 
 `src/components/ui.tsx` is the primitive set. Compose from it rather than

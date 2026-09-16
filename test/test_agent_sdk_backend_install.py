@@ -65,6 +65,7 @@ def _stub_resolvers(
     pi_acp=(["node", "/n/pi-acp.js"], "/usr/bin"),
     pi_cli=("/usr/local/bin/pi", "/usr/bin"),
     codex_acp=(["node", "/n/codex-acp.js"], "/usr/bin"),
+    goose=("/usr/local/bin/goose", "/usr/bin"),
 ):
     """Patch the four spawn resolvers on the module the driver imports from.
 
@@ -91,6 +92,10 @@ def _stub_resolvers(
     # HAS the codex adapter installed the real resolver answers ``installed`` and the
     # test fails for a property of the machine rather than of the code.
     monkeypatch.setattr(client, "_resolve_codex_acp_bin", lambda: codex_acp)
+    # goose, stubbed for the same reason as opencode and pi: it is installed on the
+    # recording host, so a payload assertion reaching the real resolver would read
+    # ``installed`` here and ``missing`` in CI.
+    monkeypatch.setattr(client, "_resolve_goose_bin", lambda: goose)
 
 
 # ── The opencode driver seams ──
@@ -760,6 +765,7 @@ class TestEndpointPayloadShape:
         assert [r["policy_id"] for r in rows] == [
             "claude",
             "codex",
+            "goose",
             "kas",
             "kiro",
             "opencode",

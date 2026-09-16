@@ -17,12 +17,16 @@ import { reportVoiceFailure } from '../lib/voiceFailure'
 import {
   fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, refreshSlot, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, setVoicePlaying, setVoiceAudio, resolveByApprovalId, clearSubagentsForSnapshot, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolActivity, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, appendSlotMessage, setQuestionCard, resolveQuestionCard, setFollowupCard, setFolderSuggestion, sseMcpAppRender, setAutomations, sseAutomation, removeAutomation, sseSideQueue, reconcileWorkflowRuns,
 } from '../store/chatSlice'
+import { selectSidebarSubagentCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../store/chatSlice'
+import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { anchorForSlot, loadLayout, sessionSlots } from './splitLayoutStore'
 import { TAB_ID } from '../api/tabId'
 import { api } from '../api/client'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
 import { forgetUnobservedMemberThreads } from '../api/membersQuery'
+import { observedPaneSlots } from '../api/slotMessagesQuery'
 import { sanitizeLlmOutput } from '../utils/sanitize'
+import { deriveToolCallTitle } from '../utils/toolCallTitle'
 import { applyStatusDelta, parseStatusDelta } from '../utils/pullRequestStatusDelta'
 import { slotChangeUrls } from '../utils/pullRequestLinks'
 import type { StatusData, ChatMessage, ChatSlot, ChatFolder, Notification, PullRequestStatusBatch, TodoList, McpSessionReport } from '../types'
@@ -99,6 +103,17 @@ function invalidateRefreshQueries(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: ['default-agent'] })
   qc.invalidateQueries({ queryKey: ['workspaces'] })
   qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+  // Prefix match on purpose: covers the filtered library list
+  // (['artifacts', {tag, kind}]) and the tag-options read
+  // (['artifacts', 'all-tags']) in one shot. The `artifact_update` frame
+  // already heals these on live mutations; this covers the server's generic
+  // refresh broadcast so an errored or stale list recovers without a reload
+  // (#10867).
+  qc.invalidateQueries({ queryKey: ['artifacts'] })
+  // The folder list fails alongside it under the same trigger (an
+  // auth-expired window 403s every endpoint) and renders `?? []` the same
+  // way — heal both or the library recovers half-empty (#10867).
+  qc.invalidateQueries({ queryKey: ['artifact-folders'] })
 }
 
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */
@@ -261,11 +276,19 @@ export function emitSlotFocused(slot: string | null): void {
  *  kept apart so the reducer can hold each part against the slot's replay
  *  floor and drop exactly the chunks a snapshot already covers. */
 type ChunkPart = { seq: number | undefined; text: string }
-type ChunkBufEntry = { parts: ChunkPart[]; lastSeq: number | undefined; gen: string | undefined; thinking: string }
+type ChunkBufEntry = { parts: ChunkPart[]; lastSeq: number | undefined; gen: string | undefined; thinking: string; chars: number }
 const newChunkBufEntry = (): ChunkBufEntry => {
-  return { parts: [], lastSeq: undefined, gen: undefined, thinking: '' }
+  return { parts: [], lastSeq: undefined, gen: undefined, thinking: '', chars: 0 }
 }
 const bufferedText = (entry: ChunkBufEntry): string => entry.parts.map((p) => p.text).join('')
+
+/** Buffered chars (content + thinking) per slot above which the chunk buffer
+ *  is flushed synchronously instead of waiting for the next animation frame.
+ *  requestAnimationFrame is suspended while the window is hidden, so a
+ *  backgrounded renderer streaming a long turn would otherwise buffer the
+ *  entire turn. The subagent buffer (bufferSubagentChunk) flushes at this
+ *  same 50 KB threshold for the same reason. */
+const CHUNK_BUF_FLUSH_CHARS = 50_000
 
 export function useWebSocket() {
   const dispatch = useAppDispatch()
@@ -814,6 +837,9 @@ export function useWebSocket() {
     const activeSlot = store.getState().chat.activeSlot
     let dispatchedActive = false
     for (const [slot, entry] of buf) {
+      // Everything buffered for this slot lands below, so the overflow counter
+      // restarts here regardless of which branches dispatch.
+      entry.chars = 0
       // Thinking first: within a turn the reasoning stream precedes the answer
       // stream, so a frame holding both must land them in that order.
       if (entry.thinking) {
@@ -874,13 +900,15 @@ export function useWebSocket() {
    *  CONTENT may be discarded — refreshSlot recovers it from the server — but
    *  reasoning is client-only (the backend never persists it), so anything
    *  still buffered when the buffer is cleared (reconnect) or the hook unmounts
-   *  would be permanently lost. A hidden tab makes that window unbounded:
+   *  would be permanently lost. A hidden tab widens that window:
    *  requestAnimationFrame is suspended there, so the scheduled flush never
-   *  runs while thinking keeps accumulating. */
+   *  runs; the overflow flush (CHUNK_BUF_FLUSH_CHARS) bounds how much can sit
+   *  here meanwhile, and this salvages the sub-threshold remainder. */
   const flushBufferedThinking = useCallback(() => {
     for (const [slot, entry] of chunkBufRef.current) {
       if (entry.thinking) {
         dispatch(sseThinkingChunk({ slot, content: entry.thinking }))
+        entry.chars -= entry.thinking.length
         entry.thinking = ''
       }
     }
@@ -1068,6 +1096,16 @@ export function useWebSocket() {
         // Invalidate every slot's summary (the key is per-slot and we cannot
         // know which ones moved); react-query only refetches the observed ones.
         queryClient.invalidateQueries({ queryKey: ['session-summary'] })
+        // Same one-shot problem for the artifact library: `artifact_update`
+        // frames pushed while the socket was down were never delivered, and a
+        // list query that ERRORED during the gap (gateway restart 403s /
+        // connection refused) holds no data at all. Invalidate the whole
+        // ['artifacts'] prefix (filtered list + all-tags) so a recovered
+        // window heals without a manual hard refresh (#10867). The folder
+        // list errors under the same trigger — heal it too, or the library
+        // comes back with its folders missing.
+        queryClient.invalidateQueries({ queryKey: ['artifacts'] })
+        queryClient.invalidateQueries({ queryKey: ['artifact-folders'] })
         // A dropped socket is the one client-visible sign the gateway may have
         // restarted — and a restart drops an unmessaged member slot while its
         // binding survives. The Crew Members page mounts a cached thread key
@@ -1103,11 +1141,15 @@ export function useWebSocket() {
         // split nothing is dispatched. The catch keeps a corrupt persisted
         // layout from aborting the rest of reconnect setup (resubscribes and
         // focus re-announce below).
+        const warmed = new Set<string>()
         if (active) {
           try {
             const liveKeys = new Set(store.getState().dashboard.slots.map(s => s.key))
             for (const member of new Set(sessionSlots(loadLayout(anchorForSlot(active))))) {
-              if (member !== active && liveKeys.has(member)) dispatch(warmSlotCache(member))
+              if (member !== active && liveKeys.has(member)) {
+                warmed.add(member)
+                dispatch(warmSlotCache(member))
+              }
             }
           } catch (err) {
             // This catch deliberately swallows so a corrupt persisted layout cannot
@@ -1117,6 +1159,26 @@ export function useWebSocket() {
             // eslint-disable-next-line no-console -- only trace of a skipped re-hydration
             console.warn('reconnect split-pane warm skipped', err)
           }
+        }
+        // A mounted ChatPane whose slot is NEITHER the active slot NOR one of
+        // its split members — the Crew Members DM thread is the standing case:
+        // its `member-<slug>` slot never becomes the Redux active slot and no
+        // persisted split names it — is covered by neither branch above. The
+        // same fire-and-forget frames it lives on (tool_result, a later
+        // tool_call, the final _done) are lost across the drop, and the pane's
+        // own hydrate query is one-shot (staleTime Infinity), so without this
+        // warm the pane keeps rendering the tool-call row it held when the
+        // socket died — for good, until a remount. The observed hydrate queries
+        // are the registry of on-screen panes (api/slotMessagesQuery.ts): warm
+        // each once through the same sanctioned path, which reconciles the rows
+        // to the server's canonical transcript, idles the run indicator only
+        // when the server says the turn ended, and raises the chunk replay
+        // floor when it is still live. The active slot is skipped here and
+        // again inside the thunk.
+        for (const slot of observedPaneSlots(queryClient)) {
+          if (slot === active || warmed.has(slot)) continue
+          warmed.add(slot)
+          dispatch(warmSlotCache(slot))
         }
         // Eagerly subscribe to subagent events so chunks arrive even when
         // Activity Panel isn't open — final result still comes via done event.
@@ -1707,14 +1769,19 @@ export function useWebSocket() {
               // No gap marker here: the reducer derives markers from the seqs
               // of the parts it keeps, after filtering against the snapshot
               // floor, so a gap the snapshot filled in is not flagged.
-              entry.parts.push({ seq: data.seq, text: data.content ?? '' })
+              const chunkText = data.content ?? ''
+              entry.parts.push({ seq: data.seq, text: chunkText })
+              entry.chars += chunkText.length
               if (data.seq !== undefined) entry.lastSeq = data.seq
               // The gateway generation that numbered the seqs (see floorForGen).
               if (typeof data.gen === 'string') entry.gen = data.gen
               if (store.getState().chat.slotStatusDetail[cs]?.kind !== 'streaming') {
                 dispatch(setSlotStatusDetail({ slot: cs, kind: 'streaming', text: 'Streaming', ts: Date.now() }))
               }
-              scheduleChunkFlush()
+              // A hidden window never runs the scheduled frame; past the
+              // threshold, drain now so the buffer cannot hold a whole turn.
+              if (entry.chars > CHUNK_BUF_FLUSH_CHARS) flushChunks()
+              else scheduleChunkFlush()
             }
             break
           }
@@ -1723,7 +1790,7 @@ export function useWebSocket() {
             // panel from this event, and a reducer that throws on a malformed
             // payload must not also cost the panel its only signal.
             window.dispatchEvent(new CustomEvent('kirocrew-tool-call', { detail: data }))
-            dispatch(sseToolActivity({ ...data as { slot: string; tool: string; kind: string; purpose: string; input_preview: string; is_shell?: boolean }, auto: (data as Record<string, unknown>).auto === true, tool_call_id: (data as Record<string, unknown>).tool_call_id as string | undefined, is_update: (data as Record<string, unknown>).is_update === true, is_shell: (data as Record<string, unknown>).is_shell === true }))
+            dispatch(sseToolActivity({ ...data as { slot: string; tool: string; kind: string; purpose: string; input_preview: string; is_shell?: boolean; tool_name?: string; mcp_server?: string }, auto: (data as Record<string, unknown>).auto === true, tool_call_id: (data as Record<string, unknown>).tool_call_id as string | undefined, is_update: (data as Record<string, unknown>).is_update === true, is_shell: (data as Record<string, unknown>).is_shell === true }))
             if (data.slot) {
               // A refinement (`is_update`) carries only the fields it refines,
               // so merge it into the live status the way sseToolActivity merges
@@ -1743,10 +1810,31 @@ export function useWebSocket() {
               // and a purpose-less call would then pin the initial stub title
               // ("Terminal") for the whole call instead of advancing to the
               // refined command.
+              //
+              // `toolName` stays the RAW title, and `derivedTitle` carries the
+              // argument-derived one (see utils/toolCallTitle) — a shell call's
+              // `List files in src`, an MCP call's `Session send: …`. The label
+              // rule that picks between them per the raw-titles preference lives
+              // in toolStatusLabel, so this frame handler only stores the parts.
               const tcid = (data as Record<string, unknown>).tool_call_id as string | undefined
               const isUpdate = (data as Record<string, unknown>).is_update === true
               const purpose = sanitizeLlmOutput((data as Record<string, unknown>).purpose as string || '')
+              const frame = data as Record<string, unknown>
               const toolName = sanitizeLlmOutput(data.tool || '')
+              const derivedInfo = deriveToolCallTitle({
+                title: (data.tool as string) || '',
+                kind: (frame.kind as string) || '',
+                rawInput: frame.input_preview,
+                isShell: frame.is_shell === true,
+                toolName: (frame.tool_name as string) || '',
+                mcpServer: (frame.mcp_server as string) || '',
+              })
+              // A template's language-neutral action is stored and rendered at read
+              // time (toolStatusLabel), so a language switch re-renders the status
+              // line; only the backend's own description (R0.0), transport text that
+              // is not localized, is stored as a string.
+              const derivedAction = derivedInfo.action
+              const derivedTitle = derivedInfo.derived && !derivedAction ? sanitizeLlmOutput(derivedInfo.title) : ''
               const prev = store.getState().chat.slotStatusDetail[data.slot]
               const mergeInto = isUpdate && tcid && prev?.kind === 'tool' && prev.toolCallId === tcid
                 ? prev
@@ -1756,6 +1844,12 @@ export function useWebSocket() {
                 kind: 'tool',
                 text: purpose || mergeInto?.text || '',
                 toolName: toolName || mergeInto?.toolName || '',
+                derivedTitle: derivedTitle || mergeInto?.derivedTitle || '',
+                ...(derivedAction
+                  ? { derivedAction, derivedMore: derivedInfo.more || 0 }
+                  : mergeInto?.derivedAction
+                    ? { derivedAction: mergeInto.derivedAction, derivedMore: mergeInto.derivedMore || 0 }
+                    : {}),
                 ...(tcid ? { toolCallId: tcid } : {}),
                 ts: Date.now(),
               }))
@@ -1772,13 +1866,19 @@ export function useWebSocket() {
             // tool_call_id; ToolCallLine mounts an McpAppFrame below the row.
             dispatch(sseMcpAppRender(data as Parameters<typeof sseMcpAppRender>[0]))
             break
-          case 'question_card':
-            // `fresh` marks a LIVE ask delivery: even if its payload repeats
-            // the identical question, it must get its own delivery identity
-            // (cardId) — unlike the reconnect re-sync above, which re-dispatches
-            // a still-pending card and must keep the existing entry.
+          case 'question_card': {
+            const previous = store.getState().chat.pendingQuestions?.[data.slot]
+            // `fresh` marks a live delivery and preserves the card's existing
+            // identity/rehydration contract. Audio deduplicates by server id.
             dispatch(setQuestionCard({ ...(data as Parameters<typeof setQuestionCard>[0]), fresh: true }))
+            const current = store.getState().chat.pendingQuestions?.[data.slot]
+            const id = data.ask_id || data.card_id
+            if (current?.slot === data.slot && !reconnectingRef.current
+                && (!id || identityOf(previous) !== id)) {
+              dispatchMcNotification(APPROVAL_KIND)
+            }
             break
+          }
           case 'question_card_resolved': {
             const ask = data as { ask_id?: string; card_id?: string }
             // Recorded independently of local state: a resolution can arrive for
@@ -2007,7 +2107,11 @@ export function useWebSocket() {
               let entry = buf.get(thinkSlot)
               if (!entry) { entry = newChunkBufEntry(); buf.set(thinkSlot, entry) }
               entry.thinking += thinkText
-              scheduleChunkFlush()
+              entry.chars += thinkText.length
+              // Same hidden-window guard as chat_chunk; reasoning streams are
+              // the long ones, so this branch is the one that usually trips it.
+              if (entry.chars > CHUNK_BUF_FLUSH_CHARS) flushChunks()
+              else scheduleChunkFlush()
             }
             // Dispatch the status detail only on a genuine kind TRANSITION into
             // 'thinking'. Guarding merely on `!== 'streaming'` would not
@@ -2043,7 +2147,10 @@ export function useWebSocket() {
           case 'chat_variant_switch':
             if (data.slot) dispatch(refreshSlot(data.slot))
             break
-          case 'chat_done':
+          case 'chat_done': {
+            let completionNeedsAttention = false
+            let completionNeedsInput = false
+            let questionPending = false
             flushChunks()
             if (data.slot) chunkBufRef.current.delete(data.slot)
             // Consume the tail while the streaming row still carries the same
@@ -2055,36 +2162,61 @@ export function useWebSocket() {
               if (last) flushVoiceTail(data.slot, last)
             }
             dispatch(sseChatMessage({ ...data, role: '_done' }))
-            // Turn-complete chime: sound-only (no feed entry, and no toast of
-            // its own — the opt-in one below is a separate branch on its own
-            // gate). Plays on every real turn completion — active or background
-            // chat — and never during reconnect catch-up replay.
-            // Preset/volume/mute resolve in useNotificationSound via the
-            // 'turn' category.
-            if (shouldChimeOnTurnDone({
-              slot: data.slot,
-              reconnecting: reconnectingRef.current,
-            })) {
-              dispatchMcNotification(TURN_DONE_KIND)
+            // Keep transcript finalization independent from attention: a parent
+            // can finish a turn while its children or workflow still owe work.
+            // A frame's activity hint wins over coalesced snapshots; older
+            // frames fall back to the existing per-session activity selectors.
+            if (data.slot) {
+              const soundState = store.getState()
+              const soundSlot = soundState.dashboard.slots.find(s => s.key === data.slot)
+              const workflows = selectSidebarWorkflowActive(soundState)
+              const workflowActive = !!(
+                workflows[normalizeRunSessionKey(data.slot)]
+                || (soundSlot?.linked_session_key && workflows[normalizeRunSessionKey(soundSlot.linked_session_key)])
+              )
+              const continuing = data.continuing ?? !!(
+                workflowActive
+                || selectSidebarSubagentCounts(soundState)[data.slot]
+                || soundSlot?.subagents_running
+                || soundSlot?.orchestrating
+                || (soundSlot?.queue_depth ?? 0) > 0
+                || selectSidebarAutomationRunningKeys(soundState).includes(dashboardAutomationSlotKey(data.slot))
+              )
+              questionPending = !!soundState.chat.pendingQuestions?.[data.slot]
+              // An authoritative frame hint (explicit question, manual Go) or a
+              // live question card both mean the conversation paused for the
+              // user rather than finished; the toast wording reads this too.
+              completionNeedsInput = data.needs_input === true || questionPending
+              completionNeedsAttention = shouldChimeOnTurnDone({
+                slot: data.slot,
+                reconnecting: reconnectingRef.current,
+                continuing,
+                needsInput: completionNeedsInput,
+              })
+              // A live question card already requested audio. Keep its named
+              // desktop toast eligible, but do not request a second chime.
+              if (completionNeedsAttention && !questionPending) dispatchMcNotification(TURN_DONE_KIND)
             }
-            // Opt-in native toast, default OFF, and gated on the user being
-            // AWAY — deliberately not the chime's gate, which ignores focus so
-            // every turn is audible. Titled with the finishing session so a
-            // user tracking several background threads learns which one is
-            // done; `tag` is per-slot so concurrent completions coalesce per
-            // session instead of overwriting one another.
-            if (shouldNotifyOnChatComplete({
+            // Native notifications can carry an OS sound too, so they share
+            // the attention gate before applying the opt-in and away checks.
+            if (completionNeedsAttention && shouldNotifyOnChatComplete({
               slot: data.slot,
               reconnecting: reconnectingRef.current,
             })) {
               const doneSlot = data.slot as string
               const doneTitle = store.getState().dashboard.slots
                 .find(s => s.key === doneSlot)?.title || doneSlot
+              // A toast that reads "Response ready" while the agent is waiting
+              // on the user misdescribes the handoff; two literal keys keep the
+              // reference statically checkable (see check-i18n-keys.mjs).
+              const doneBody = completionNeedsInput
+                ? i18nT('hooks.useWebSocket.waiting_for_input')
+                : i18nT('hooks.useWebSocket.response_ready')
               // Android Chrome throws "Illegal constructor" for page-context
               // Notification; an uncaught throw here kills the whole message
               // handler, so the native toast is best-effort (same as approval).
               try {
-                new Notification(doneTitle, { body: i18nT('hooks.useWebSocket.response_ready'), tag: `kirocrew-chat-done:${doneSlot}` })
+                new Notification(doneTitle, { body: doneBody, tag: `kirocrew-chat-done:${doneSlot}`, silent: questionPending })
               } catch {
                 /* unsupported platform */
               }
@@ -2153,6 +2285,7 @@ export function useWebSocket() {
               api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
             }
             break
+          }
           case 'autonudge_state': {
             // One transport path feeds the authoritative collection consumed by
             // both the sidebar and active-slot detail surface.

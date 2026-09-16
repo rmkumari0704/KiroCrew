@@ -49,8 +49,10 @@ from kiro_crew import acp_tool_gate, agent_scratch, agent_sdk, model_registry, p
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import seed_provenance
 from kiro_crew.acp._dispatch import (
+    ACP_BACKENDS_META_IDENTITY,
     _kiro_mcp_server_name,
     _kiro_tool_name,
+    _measure_tool_output,
     agent_version_from_init,
     build_permission_event,
     derive_edit_diff,
@@ -59,6 +61,8 @@ from kiro_crew.acp._dispatch import (
     gate_envelope,
     log_unrenderable_content,
     make_unified_diff,
+    meta_builtin_server_names,
+    meta_builtin_shell,
     parse_claude_compaction_notice,
     parse_prompt_token_usage,
     parse_refusal,
@@ -83,6 +87,7 @@ from kiro_crew.acp.session_mcp import agent_spec_snapshot, session_mcp_deny_rule
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
@@ -142,9 +147,11 @@ from kiro_crew.acp.types import (
     OUTCOME_SELECTED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
+    TERMINAL_TOOL_STATUSES,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
     UPDATE_CONFIG_OPTION,
+    UPDATE_CURRENT_MODE,
     UPDATE_TOOL_CALL,
     UPDATE_USAGE,
     AcpEvent,
@@ -241,6 +248,10 @@ PROTOCOL_VERSION_OPENCODE = 1
 # pi-acp answers ``initialize`` with an integer ``protocolVersion`` of 1 as well,
 # verified off its own wire; its own literal for the same H10 reason.
 PROTOCOL_VERSION_PI = 1
+# goose answers ``initialize`` with an integer ``protocolVersion`` of 1, captured off
+# goose 1.50.1's own wire (``test/fixtures/acp_frames/goose/handshake-live.jsonl``);
+# its own literal for the same H10 reason.
+PROTOCOL_VERSION_GOOSE = 1
 #: Handshake dialect per harness. A TABLE, not an if-chain: the handshake runs on
 #: the construction path kiro-cli shares with every adapter, and harness-parity H13
 #: keeps that path free of conditionals added in service of one. A harness added
@@ -250,6 +261,7 @@ _PROTOCOL_VERSION_BY_BACKEND: dict[str, int | str] = {
     ACP_BACKEND_CODEX: PROTOCOL_VERSION_CODEX,
     ACP_BACKEND_OPENCODE: PROTOCOL_VERSION_OPENCODE,
     ACP_BACKEND_PI: PROTOCOL_VERSION_PI,
+    ACP_BACKEND_GOOSE: PROTOCOL_VERSION_GOOSE,
 }
 DEFAULT_MODEL = "auto"
 
@@ -338,6 +350,35 @@ _OPENCODE_CONFIG_READBACK_ARGS = ("debug", "config")
 # short-lived child, measured at ~2.3s on a loaded dev desktop.
 _OPENCODE_READBACK_TIMEOUT_S = 30.0
 
+# goose serves ACP from its own binary too, so the same plain-binary ladder applies
+# and there is no adapter package and no Node floor.
+GOOSE_BIN = "goose"
+GOOSE_ACP_SUBCMD = "acp"
+# Explicit override, spelled like the sibling harnesses' overrides.
+_ENV_GOOSE_BIN = "GOOSE_BIN"
+# The channel Crew's permission routing travels down on this harness: goose resolves
+# its mode from a PLAIN ENVIRONMENT VARIABLE, above its own config file, so the seed
+# needs neither a file nor a JSON document. Verified on this harness by resolving a
+# config that declares ``GOOSE_MODE: auto`` and reading ``approve`` back off the
+# session.
+_ENV_GOOSE_MODE = "GOOSE_MODE"
+# The harness's own installer. Not an ``npm i -g`` of an adapter, because there is no
+# adapter: this installs the binary that serves ACP.
+GOOSE_INSTALL_COMMAND = (
+    "curl -fsSL https://raw.githubusercontent.com/block/goose/main/download_cli.sh | bash"
+)
+# The builtin extension Crew asks goose to load. goose REPLACES its configured
+# extensions with the client's ``mcpServers`` array, so a session handed Crew's
+# servers and nothing else carries no shell and no file tools at all. Naming it on
+# the command line restores those alongside Crew's own, and they route through the
+# same permission mode as everything else.
+_GOOSE_BUILTIN_ARG = "--with-builtin"
+_GOOSE_BUILTIN_DEVELOPER = "developer"
+# goose's auto-approving mode (``auto``) is never named here: the seed is the one
+# place a mode value enters the child and it carries the required mode, so the auto
+# mode has no path onto the wire by construction. ``session/set_mode`` would accept
+# it, which is why no constant for it exists to be passed.
+
 # Launchers that carry the adapter's entry script as their next argument.  A
 # label taken from argv[0] alone would read "node" for every adapter resolved
 # to a script rather than a native binary.
@@ -404,6 +445,18 @@ PI_ACP_VERIFIED_VERSION = "0.0.33"
 # Versions already named this process, so a gateway on a newer adapter says so
 # once, not on every session.
 _pi_adapter_versions_noted: set[str] = set()
+# goose's VERIFIED RANGE (the note beside ``ACP_BACKEND_GOOSE`` in
+# ``agent_sdk/backends.py``) is 1.50.x. Of the three wire facts it names, the
+# ``current_mode_update`` emission the mid-session tripwire rests on is the one that
+# fails OPEN: a release that stopped emitting it would narrow enforcement back to the
+# open/restore read-back with no frame saying so. ``agentInfo.version`` on the
+# ``initialize`` reply is the one signal before the first prompt, so a release outside
+# the range is named there. The trailing dot keeps ``1.500.x`` outside it. A warning,
+# not a refusal: the two closed facts still hold on any release, and a newer goose is
+# the common case.
+GOOSE_VERIFIED_VERSION_PREFIX = "1.50."
+# Same once-per-process memo as the pi note above.
+_goose_versions_noted: set[str] = set()
 # The per-session nonce the gate extension reads and echoes in its dialogs, so
 # the dispatch parser accepts only envelopes this session's own extension wrote.
 _ENV_PI_GATE_SESSION = "KIROCREW_PI_GATE_SESSION"
@@ -837,6 +890,7 @@ def _resolve_claude_acp_bin() -> tuple[list[str] | None, str]:
 
 
 _opencode_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
+_goose_bin_cache: tuple[str | None, str] | object = _UNRESOLVED
 
 
 def _resolve_opencode_bin() -> tuple[str | None, str]:
@@ -860,6 +914,33 @@ def _resolve_opencode_bin() -> tuple[str | None, str]:
         return mise_resolved, search_path
 
     on_path = shutil.which(OPENCODE_BIN, path=search_path)
+    if on_path:
+        return _normalize_exe_casing(on_path) or on_path, search_path
+
+    return None, search_path
+
+
+def _resolve_goose_bin() -> tuple[str | None, str]:
+    """Find the goose executable and the PATH searched for it.
+
+    The same three-rung plain-binary ladder ``_resolve_opencode_bin`` walks, for the
+    same reason: this harness is a binary that serves ACP itself, not a Node entry
+    script, so there is no ``node_modules`` rung and no node to resolve.
+
+    Returns ``(None, search_path)`` when it is absent, so the caller reports what was
+    searched rather than raising from inside the resolver.
+    """
+    search_path = augmented_path(os.environ.get("PATH", ""))
+
+    override = os.environ.get(_ENV_GOOSE_BIN)
+    if override and platform_compat.is_executable_file(override):
+        return _normalize_exe_casing(override) or override, search_path
+
+    mise_resolved = _mise_which(GOOSE_BIN)
+    if mise_resolved:
+        return mise_resolved, search_path
+
+    on_path = shutil.which(GOOSE_BIN, path=search_path)
     if on_path:
         return _normalize_exe_casing(on_path) or on_path, search_path
 
@@ -1883,32 +1964,58 @@ _TOOL_INTERRUPTED_MARKER = "Tool uses were interrupted, waiting for the next use
 def _identified_mcp_call(event: AcpEvent) -> tuple[str, str] | None:
     """The ``(server, tool)`` a permission event PROVABLY refers to, or None.
 
-    Only the params cached from the preceding ``tool_call`` frame count
-    (``raw_params_trusted``); the permission payload's own fields are a different
-    shape (``serverName`` and prose) and could be anything. Both keys are the
-    adapter's resolution of which server and tool run -- codex-acp's
-    ``createMcpRawInput`` -- not model text.
+    TWO trusted channels, and neither is the permission payload's own fields -- those
+    are a different shape (``serverName`` and prose) and could be anything.
+
+    The first is the params cached from the preceding ``tool_call`` frame
+    (``raw_params_trusted``), whose ``server``/``tool`` keys are the adapter's own
+    resolution of what will run -- codex-acp's ``createMcpRawInput``.
+
+    The second is the ``_meta`` identity the frame carried, cached and inherited the same
+    way (``mcp_identity_trusted``). It exists because rawInput is NOT a universal
+    channel: goose sends ``rawInput`` as ``{"": "{}"}`` and states the identity in
+    ``_meta.goose.toolCall`` instead, so a reader that only knew rawInput found no
+    identity on a harness that had published one. Same trust class either way -- both are
+    harness-resolved and unreachable by the model -- which is why the fallback is a
+    second source and not a weaker one.
     """
-    if not event.raw_params_trusted:
-        return None
-    params = event.raw_tool_params if isinstance(event.raw_tool_params, dict) else {}
-    server = params.get("server")
-    tool = params.get("tool")
-    if isinstance(server, str) and isinstance(tool, str) and server and tool:
-        return server, tool
+    if event.raw_params_trusted:
+        params = event.raw_tool_params if isinstance(event.raw_tool_params, dict) else {}
+        server = params.get("server")
+        tool = params.get("tool")
+        if isinstance(server, str) and isinstance(tool, str) and server and tool:
+            return server, tool
+    if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
+        return event.mcp_server_name, event.tool_name
     return None
 
 
-def _is_mcp_tool_approval(msg: JsonRpcMessage) -> bool:
+def _is_mcp_tool_approval(msg: JsonRpcMessage, event: AcpEvent | None = None) -> bool:
     """Whether a ``session/request_permission`` is an MCP tool-call approval.
 
-    codex-acp marks one with ``_meta.is_mcp_tool_approval`` on the request
-    (``buildMcpPermissionRequest``), for the correlated and the standalone shape
-    alike. Absent on a shell or edit approval and on every other backend.
+    Two signals, because no single one is present on every harness.
+
+    codex-acp marks the REQUEST with ``_meta.is_mcp_tool_approval``
+    (``buildMcpPermissionRequest``), for the correlated and the standalone shape alike,
+    and sets it on neither a shell nor an edit approval.
+
+    A harness that sets no such marker can still have SAID what the call is: a trusted
+    ``_meta`` identity naming a server means the harness resolved this call to an MCP
+    server, which is the same claim. Read off *event* so it comes from the cached
+    ``tool_call`` frame rather than the permission payload. Without this, a harness that
+    publishes its identity but not codex's marker slipped past the
+    unidentified-approval refusal entirely -- and on an auto-approve path with a deny set
+    that meant a switched-off tool ran.
+
+    A built-in or shell call answers False on both signals: goose leaves
+    ``extensionName`` unset for its own tools, so no server is named and nothing here
+    fires.
     """
     params = msg.params if isinstance(msg.params, dict) else {}
     meta = params.get("_meta")
-    return isinstance(meta, dict) and meta.get("is_mcp_tool_approval") is True
+    if isinstance(meta, dict) and meta.get("is_mcp_tool_approval") is True:
+        return True
+    return bool(event is not None and event.mcp_identity_trusted and event.mcp_server_name)
 
 
 def _is_tool_interrupted_marker(chunk: str) -> bool:
@@ -4320,6 +4427,14 @@ class AcpClient:
         # the later permission_request event (which carries no kind) can inherit
         # the canonical shell signal. Mirrors _tool_call_inputs lifecycle.
         self._tool_call_is_shell: dict[str, bool] = {}
+        # Map toolCallId → "no channel classified this call". A tool_call frame
+        # answers the question "is this a command?" through an ACP ``kind`` or
+        # through a harness ``_meta`` channel; a frame carrying NEITHER leaves the
+        # command gates with nothing to check, and the permission request that
+        # follows carries no kind of its own. Remembered here so that request can
+        # be refused rather than answered blind. Mirrors _tool_call_is_shell's
+        # lifecycle.
+        self._tool_call_unclassified: dict[str, bool] = {}
         # toolCallIds already credited to the skill-usage ledger as a body read.
         # The arguments arrive on either the initial tool_call or its refinement
         # depending on the provider, so both are observed and this prevents one
@@ -4452,6 +4567,22 @@ class AcpClient:
         return getattr(self, "_agent_version", "")
 
     @property
+    def _judges_permission_requests(self) -> bool:
+        """True when a permission request on this session is JUDGED before it is answered.
+
+        Two facts make an answering site build the full event and consult the provenance
+        caches instead of approving on the frame alone: a spec deny set (a switched-off
+        tool must be refused wherever it asks), and membership in
+        ``ACP_BACKENDS_META_IDENTITY`` (the harness publishes a tool identity on every
+        frame, and a frame that carries none, or one naming a server Crew never mounted,
+        is refused). The second is a fact about the channel, not about the deny set: the
+        goose projection carries an empty deny set by ruling, so a refusal that waited
+        for one would never run on a goose session at all. Everywhere else the sites keep
+        their prior behaviour byte for byte.
+        """
+        return bool(self._spec_denied_tools) or self.backend in ACP_BACKENDS_META_IDENTITY
+
+    @property
     def _is_claude(self) -> bool:
         return self.backend == ACP_BACKEND_CLAUDE
 
@@ -4466,6 +4597,10 @@ class AcpClient:
     @property
     def _is_pi(self) -> bool:
         return self.backend == ACP_BACKEND_PI
+
+    @property
+    def _is_goose(self) -> bool:
+        return self.backend == ACP_BACKEND_GOOSE
 
     @property
     def _model_registry_namespace(self) -> str:
@@ -4891,6 +5026,84 @@ class AcpClient:
         kiro-cli (harness-parity H13).
         """
         return self._session_mcp_servers()
+
+    def _goose_session_mcp_servers(self) -> list:
+        """MCP server array passed to a goose ``session/new`` / ``session/load``.
+
+        The goose twin of :meth:`_opencode_session_mcp_servers`, and it must stay
+        non-empty for the same reason: ``goose acp`` reads no
+        ``~/.kiro/agents/<name>.json``, so nothing Crew declares reaches the session
+        through any other door. Without this hook a goose session holds none of Crew's
+        own tools at all -- no ``spawn_run``, no ``cron_add``, no ``send_message`` --
+        while working in every visible respect. It also holds no pooled broker stubs,
+        because :meth:`_pooled_mcp_servers` answers ``[]`` for any backend in
+        ``MIRRORS`` and hands that half to the mirror instead.
+
+        No transport filter, for opencode's reason rather than by copying it: this
+        harness ACCEPTS the stdio element and mounts it, measured as a round trip
+        against 1.50.1 -- the named child is asked ``initialize``,
+        ``notifications/initialized``, ``tools/list`` and ``tools/call``, and the
+        tool's own result comes back. So a filter would only remove servers the
+        harness would have mounted.
+
+        The failure mode a bad element causes is the LOOSEST of the three, and it is
+        the one thing about this accessor a reader has to know: an element whose command
+        cannot start does not fail ``session/new`` at all. The session is created with
+        that element dropped, so a malformed spec line costs Crew's tools rather than the
+        session.
+
+        **The drop is unobservable on this harness, and the corpus pin is the accepted
+        control.** goose emits no per-server MCP notification of any kind, so
+        ``_mcp_timeout_progress`` -- which reads ``mcp_server_initialized`` -- has
+        nothing to read here even as the timeout diagnostic it is; and the one
+        enumeration ``session/new`` does carry, ``available_commands_update``, is
+        byte-identical between a good mount and a dropped one. A session missing every
+        Crew tool is therefore indistinguishable on the wire from a healthy one, and
+        what stands in for a runtime check is
+        ``test/fixtures/acp_frames/goose/mcp-stdio-mount-live.jsonl``: it pins the round
+        trip -- ``initialize``, ``notifications/initialized``, ``tools/list`` and
+        ``tools/call`` reaching the child, and its result coming back -- so a release
+        that stops mounting the element goes red in the corpus rather than silently
+        emptying every session's tool set.
+
+        Accepted rather than closed, on two grounds. A dropped mount is a FUNCTIONALITY
+        loss and not a gate bypass: permission routing on this harness rides on the
+        seeded mode and its read-back, not on MCP, so every tool call a degraded session
+        does make still reaches ``HookManager.on_tool_call``. And observing the connect
+        is not goose-shaped work -- Crew hosts the broker stubs, so it can watch for the
+        child's own ``initialize`` for every member of
+        ``ACP_BACKENDS_SESSION_MCP_ARRAY``. That makes it a shared-path feature rather
+        than one harness's onboarding cost, and it is named as a follow-up: the broker
+        observes an ``initialize`` from the child within N seconds of ``session/new``,
+        and otherwise logs a warning and marks the session degraded.
+
+        The translation lives in the mirror
+        (:mod:`kiro_crew.providers.mirrors.goose`), not here, for the same reason the
+        three siblings' do: projecting the agent spec onto a backend's native shape is
+        one named contract with one implementation per backend.
+
+        The seam is deliberately KEPT rather than replaced by a capability-set call: an
+        edition may override this method, and swapping the call site for a set
+        membership test would silently stop calling that override.
+
+        In-memory only. The spawn path warms ``_session_mcp_cache`` off the loop, so
+        this accessor adds no scheduling or failure point to a call site shared with
+        kiro-cli (harness-parity H13).
+
+        The count is logged HERE, on the goose arm, because it is the one thing about a
+        goose session's tool set that is observable at all: the harness reports nothing
+        per server and nothing on a drop, so the number Crew handed over is the only
+        greppable fact a degraded session leaves behind until the broker-side mount
+        check exists. A count is not a mount -- it says what was offered, not what took.
+        """
+        servers = self._session_mcp_servers()
+        logger.info(
+            "goose session MCP: %d server(s) placed on the session array; this harness "
+            "reports neither a mount nor a drop per server [session=%s]",
+            len(servers),
+            self._session_id,
+        )
+        return servers
 
     def _claude_local_settings_path(self) -> Path:
         return self._work_dir / ".claude" / "settings.local.json"
@@ -6285,6 +6498,54 @@ class AcpClient:
         # stale state rather than guarding on it.
         self._available_mode_ids, _current_mode, self._modes_advertised = parse_session_modes(resp)
 
+    def _verify_goose_routing(self, resp: dict) -> None:
+        """Read this harness's OWN resolved mode back off the session response.
+
+        This is the half that makes the routing VERIFIED rather than seeded, and on
+        this harness it costs no second child: the mode goose resolved is reported in
+        the ``modes`` block of the very response that opens or restores the session,
+        so what comes back is the mode the session will actually use and it arrives on
+        the session's own connection. A precedence change in a future release
+        therefore surfaces as a refusal here rather than as a session that silently
+        stops asking.
+
+        Called on BOTH paths, and the restore path is the one that needs it most: the
+        environment seed governs a session goose CREATES, but a session goose RESTORES
+        carries the mode it was last left in, and ``session/set_mode`` accepts the
+        auto-approving one. So a session resumed after any actor moved it would come
+        back permissive, and only this read can tell.
+
+        What it does NOT establish is that the harness HONOURS the mode per tool call;
+        that is the harness's own contract and no client-side read can prove it. The
+        scope is the precondition, and the frame corpus carries the observation of the
+        emission.
+
+        Raises ``AcpToolGateUnroutable`` when the required mode is not in force.
+        """
+        if not self._is_goose:
+            return
+        _ids, current_mode, advertised = parse_session_modes(resp)
+        # An omitted modes block is INDETERMINATE rather than a pass: this harness
+        # always reports one, so its absence means the response is not the shape this
+        # read was verified against and no claim can be made from it.
+        observed = current_mode if advertised else ""
+        issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
+        if not issue:
+            return
+        try:
+            acp_tool_gate.enforce_runtime_routing(
+                self.backend,
+                issue,
+                remedy=acp_tool_gate.remediation_for(self.backend),
+            )
+        except acp_tool_gate.ToolGateUnroutable as exc:
+            # Translated to the ACP-layer type like the sibling refusal sites, and
+            # that is not cosmetic: ``ensure_ready`` catches ``AcpToolGateUnroutable``,
+            # so a bare gate exception would escape both of its handlers and skip
+            # ``_cleanup_failed_live_spawn`` -- leaving the refusal untyped and the
+            # failed spawn unreaped.
+            raise AcpToolGateUnroutable(str(exc)) from None
+
     def _handle_config_option_update(self, msg: JsonRpcMessage) -> None:
         """Process a config_option_update session notification.
 
@@ -6705,6 +6966,68 @@ class AcpClient:
                     )
                 except acp_tool_gate.ToolGateUnroutable as exc:
                     raise AcpToolGateUnroutable(str(exc)) from None
+        elif self._is_goose:
+            # This harness serves ACP from its own binary, so the argv is that binary
+            # plus its ``acp`` subcommand: no adapter entry script, no node, and no
+            # npm package to resolve.
+            global _goose_bin_cache  # noqa: PLW0603
+            if _goose_bin_cache is _UNRESOLVED:
+                _goose_bin_cache = await asyncio.to_thread(_resolve_goose_bin)
+            cached_goose_resolution = _goose_bin_cache
+            goose_bin, goose_search_path = (
+                cached_goose_resolution
+                if isinstance(cached_goose_resolution, tuple)
+                else (None, "")
+            )
+            if not isinstance(goose_bin, str) or not goose_bin:
+                raise AcpError(
+                    f"{GOOSE_BIN} not found "
+                    f"({describe_search_path(goose_search_path)}). Install it with "
+                    f"'{GOOSE_INSTALL_COMMAND}', or set {_ENV_GOOSE_BIN} to the "
+                    f"executable. No adapter package is needed: this harness serves ACP "
+                    f"itself."
+                )
+            # The builtin extension travels on the ARGV rather than in the session
+            # array, because it is not one of Crew's servers: it is the harness's own
+            # shell and file tools, which this harness drops when a client supplies
+            # ``mcpServers``. Restoring them here keeps a session that has Crew's
+            # tools from having nothing else.
+            argv = [
+                goose_bin,
+                GOOSE_ACP_SUBCMD,
+                _GOOSE_BUILTIN_ARG,
+                _GOOSE_BUILTIN_DEVELOPER,
+            ]
+            # Translate the agent spec into this session's MCP array HERE, on goose's
+            # own arm, for the reason the claude, codex and opencode arms do it on
+            # theirs: the translation reads disk, and doing it at the shared
+            # session/new call site would put an executor hop and a new failure mode
+            # on EVERY backend's construction path, kiro-cli included (harness-parity
+            # H13). Correctness does not depend on this warm -- _session_mcp_servers
+            # resolves a cold cache itself -- the warm is what keeps the read off the
+            # loop.
+            self._session_mcp_cache = await asyncio.to_thread(self._resolve_session_mcp_servers)
+            spawn_label = f"{GOOSE_BIN} {GOOSE_ACP_SUBCMD}"
+            stderr_label = GOOSE_BIN
+            # The same refuse-then-mask preflight the codex, opencode and pi arms run,
+            # keyed on the same routing question rather than on this harness's
+            # identity: it is ENFORCED, so the OS credential mask is the compensating
+            # control for the passive reads ACP v1 cannot make it ask about, and
+            # several wrap_argv paths return without applying it. test_acp_tool_gate
+            # pins one call site per enforced harness so a new arm cannot forget it.
+            adapter_hidden_dirs = await _run_preflight_bounded(
+                _sandbox_preflight, self.backend, self._sandbox_mode
+            )
+            # The routing seed. UNLIKE the opencode arm there is no read-back child
+            # here and no wrapped second spawn: this harness reports the mode it
+            # resolved in the ``modes`` block of the very response that opens or
+            # restores the session, so the read-back rides the session's own
+            # connection and is done in ``_verify_goose_routing`` off that response.
+            # What travels here is only the seed.
+            self._extra_env = {
+                **self._extra_env,
+                _ENV_GOOSE_MODE: acp_tool_gate.permission_setting_for(self.backend)[1],
+            }
         elif self._is_pi:
             # Two components, resolved separately because either can be absent on
             # its own and the not-found message must name the one that is.
@@ -7680,6 +8003,7 @@ class AcpClient:
                 *(self._claude_session_mcp_servers() if self._is_claude else []),
                 *(self._codex_session_mcp_servers() if self._is_codex else []),
                 *(self._opencode_session_mcp_servers() if self._is_opencode else []),
+                *(self._goose_session_mcp_servers() if self._is_goose else []),
                 *(await asyncio.to_thread(self._pooled_mcp_servers)),
             ],
         }
@@ -7776,6 +8100,7 @@ class AcpClient:
         self._agent_mcp_capabilities = dict(advertised) if isinstance(advertised, dict) else {}
         self._agent_version = agent_version_from_init(init_resp)
         self._note_pi_adapter_version()
+        self._note_goose_version()
 
         # The subprocess has now read its agent spec, which closes the window the
         # pre-spawn snapshot opened: a write landing before this point is caught here,
@@ -7843,6 +8168,7 @@ class AcpClient:
                             *(self._claude_session_mcp_servers() if self._is_claude else []),
                             *(self._codex_session_mcp_servers() if self._is_codex else []),
                             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
+                            *(self._goose_session_mcp_servers() if self._is_goose else []),
                             *(await asyncio.to_thread(self._pooled_mcp_servers)),
                         ],
                     }
@@ -7885,6 +8211,21 @@ class AcpClient:
                     logger.info(
                         "session/load failed for %s, falling back to session/new", resume_sid
                     )
+                else:
+                    # The ``else`` of the try, so this runs ONLY on a load that did not
+                    # raise -- and OUTSIDE it, so the refusal below cannot be caught as
+                    # a failed load. Gated here rather than inside the method so the
+                    # first-class kiro path gains no call and no failure point in
+                    # service of an adapter (harness-parity H13).
+                    #
+                    # A RESTORED session carries the mode it was left in, which the
+                    # environment seed does not re-apply, so this is what keeps a
+                    # resumed session from coming back permissive. Conditioned on
+                    # ``_resumed`` because a load that returned no ``modes`` block did
+                    # not take: that path falls through to session/new, which does its
+                    # own read-back on the response that replaces this one.
+                    if self._is_goose and self._resumed:
+                        self._verify_goose_routing(load_resp)
             else:
                 logger.info("Session file missing for %s, skipping load", resume_sid)
 
@@ -7905,6 +8246,13 @@ class AcpClient:
                 await self._persist_advertised_models_if_changed()
                 await self._reseed_after_capture()
             self._store_session_config(session_resp)
+            # Before the first prompt, and before the session id is even checked: a
+            # session that cannot establish the asking posture is one where none of
+            # Crew's tool controls execute. Gated HERE rather than inside the method so
+            # the first-class kiro path gains no call and no failure point in service of
+            # an adapter (harness-parity H13).
+            if self._is_goose:
+                self._verify_goose_routing(session_resp)
             if not self._session_id:
                 # Both the initial attempt and the substitution retry failed to
                 # yield a session. Raise a clear, actionable error instead of
@@ -9068,6 +9416,7 @@ class AcpClient:
                     # The gate tripwire holds on every reader that answers
                     # permission frames, this text-only one included.
                     await self._tripwire_pi_gate(msg)
+                    await self._tripwire_goose_mode(msg)
                     chunk, is_thinking = self._extract_text_chunk(msg)
                     if chunk and not is_thinking:
                         # A claude compaction notice is a control frame wearing
@@ -9096,10 +9445,12 @@ class AcpClient:
                     # identifies a call ONLY from the provenance the extractor caches
                     # (raw params by toolCallId) -- stats alone would leave every
                     # request unidentified, and the auto-approve site then refuses
-                    # them all rather than run a switched-off tool. With no deny set
-                    # nothing is refused, so the tracker's byte-identical behaviour on
-                    # every other backend is kept.
-                    if self._spec_denied_tools:
+                    # them all rather than run a switched-off tool. The same extractor
+                    # writes the classification cache the identity-drift refusals read,
+                    # so a harness in ACP_BACKENDS_META_IDENTITY runs it too. On a
+                    # session that judges nothing, the tracker's byte-identical
+                    # behaviour on every other backend is kept.
+                    if self._judges_permission_requests:
                         self._extract_tool_event(msg)
                     else:
                         self._track_tool_call(msg)
@@ -9138,6 +9489,7 @@ class AcpClient:
         self._tool_call_inputs.clear()
         self._tool_call_input_redacted.clear()
         self._tool_call_is_shell.clear()
+        self._tool_call_unclassified.clear()
         self._skill_read_noted.clear()
         self._pending_skill_reads.clear()
         self._tool_call_mcp_server.clear()
@@ -9236,7 +9588,15 @@ class AcpClient:
                 _raise_acp_error(msg.error, self._advertised_model_ids(), backend=self.backend)
             if action == "permission":
                 permission_event = self._build_permission_event(msg)
-                if not await self._deny_spec_disabled_tool(permission_event):
+                # Two refusals before the consumer's gate sees the request: a switched-off
+                # tool, and a harness identity that is absent or names an unmounted
+                # server. The second matters HERE as much as on the auto-approve site --
+                # a frame nothing classified reaches the consumer as a non-shell tool, so
+                # the command-deny tier never sees the command it carries.
+                if not (
+                    await self._deny_spec_disabled_tool(permission_event)
+                    or await self._refuse_identity_drift(permission_event)
+                ):
                     yield permission_event
             elif action == "server_request_unknown":
                 await self._reject_unknown_server_request(msg)
@@ -9315,6 +9675,7 @@ class AcpClient:
                 # message end.  See `_extract_tool_call_update` for the dual-path
                 # (content blocks vs rawOutput) details.
                 await self._tripwire_pi_gate(msg)
+                await self._tripwire_goose_mode(msg)
                 tool_result_event = self._extract_tool_call_update(msg)
                 if tool_result_event:
                     # The dispatched tool produced a result — disarm the stall
@@ -9875,6 +10236,7 @@ class AcpClient:
                     await self._maybe_note_skill_read(tool_event)
                     await self._maybe_fire_pre_tool_hooks(tool_event)
                 await self._tripwire_pi_gate(msg)
+                await self._tripwire_goose_mode(msg)
                 tool_result_event = self._extract_tool_call_update(msg)
                 if tool_result_event:
                     self._maybe_credit_skill_read(tool_result_event)
@@ -9892,24 +10254,32 @@ class AcpClient:
     async def _handle_permission(self, msg: JsonRpcMessage) -> None:
         """Auto-approve tool permissions.
 
-        When this session carries a spec deny set, the refusal runs first, because
-        this site answers the request with no consumer's gate in between and the
-        restriction must hold on every path that answers. And because there is no
-        human here, "unidentified" cannot fall toward asking: an MCP tool approval
-        (the adapter marks one with ``_meta.is_mcp_tool_approval``) whose call this
-        client cannot identify is REFUSED rather than approved blind. With an empty
-        deny set nothing is checked and nothing is built -- other backends' behaviour
-        here is unchanged, and building the event would record advertised option
-        ids these sites never consulted.
+        When this session judges its requests (:attr:`_judges_permission_requests`),
+        the refusals run first, because this site answers the request with no
+        consumer's gate in between and a restriction must hold on every path that
+        answers: a switched-off tool, then a harness identity that is absent or names
+        a server this session never mounted. And because there is no human here,
+        "unidentified" cannot fall toward asking: on a session with a deny set, an MCP
+        tool approval (the adapter marks one with ``_meta.is_mcp_tool_approval``)
+        whose call this client cannot identify is REFUSED rather than approved blind.
+        On a session that judges nothing, nothing is checked and nothing is built --
+        other backends' behaviour here is unchanged, and building the event would
+        record advertised option ids these sites never consulted.
         """
-        # Before the deny-set branch: with an empty deny set no event is built here,
+        # Before the branch: on a session that judges nothing no event is built here,
         # and the gate tripwire still needs to know this call was asked about.
         self._note_pi_gate_asked(msg)
-        if self._spec_denied_tools:
+        if self._judges_permission_requests:
             event = self._build_permission_event(msg)
             if await self._deny_spec_disabled_tool(event):
                 return
-            if _is_mcp_tool_approval(msg) and not _identified_mcp_call(event):
+            if await self._refuse_identity_drift(event):
+                return
+            if (
+                self._spec_denied_tools
+                and _is_mcp_tool_approval(msg, event)
+                and not _identified_mcp_call(event)
+            ):
                 logger.warning(
                     "session MCP: refusing an MCP tool approval this client cannot identify "
                     "on an auto-approve path -- the spec switches tools off on this session "
@@ -9933,6 +10303,117 @@ class AcpClient:
         logger.info("Auto-approving tool: %s", title)
 
         await self.approve_tool(request_id)
+
+    async def _refuse_identity_drift(self, event: AcpEvent) -> bool:
+        """Refuse a request whose harness identity is absent or names an unmounted server.
+
+        The two refusals the identity channel earns, run from ONE place on every site
+        that answers a permission request, and independent of the deny set: they are
+        facts about the channel, and goose -- the one member today -- carries an empty
+        deny set by ruling, so a refusal that waited for one never ran on a real goose
+        session. Gated on ``ACP_BACKENDS_META_IDENTITY`` up front so no other backend
+        gains a call; each predicate below keeps its own narrower scope as well.
+
+        Returns True when the request was refused (rejected on the wire and audited),
+        False when it was left to the caller. A False means "not refused BY THIS".
+        """
+        if self.backend not in ACP_BACKENDS_META_IDENTITY:
+            return False
+        if self._unclassified_tool_call(event):
+            logger.warning(
+                "session MCP: refusing a tool approval no channel classified -- the "
+                "tool_call frame carried neither an ACP kind nor a harness _meta identity, "
+                "so a command cannot be told from a served tool and no gate can be applied "
+                "to it [session=%s]",
+                self._session_id,
+            )
+            self._audit_spec_restriction(
+                tool_name="tool__unclassified",
+                outcome="denied",
+                reason="spec_disabled_tool_unclassified_call",
+            )
+            await self.reject_tool(event.request_id)
+            return True
+        if self._foreign_mcp_identity(event):
+            logger.warning(
+                "session MCP: refusing an approval whose trusted identity names server "
+                "%r, which Crew never placed on this session's array and which is not "
+                "the harness's own extension -- a drifted builtin would otherwise pass "
+                "as MCP-served and skip the command tier [session=%s]",
+                event.mcp_server_name,
+                self._session_id,
+            )
+            self._audit_spec_restriction(
+                tool_name=f"mcp__{event.mcp_server_name}__{event.tool_name or 'unknown'}",
+                outcome="denied",
+                reason="spec_disabled_tool_foreign_server",
+            )
+            await self.reject_tool(event.request_id)
+            return True
+        return False
+
+    def _foreign_mcp_identity(self, event: AcpEvent) -> bool:
+        """True when a trusted identity names a server this session never mounted.
+
+        The fail-closed classification covers a channel that is ABSENT. This covers a
+        channel that has DRIFTED: a harness release that renames its builtin extension
+        would carry a trusted identity naming a server Crew never placed on the array,
+        and the readers would file it as an MCP-served tool -- not a command, so the
+        command-deny tier is skipped, and not in any deny set, so it is approved. Crew
+        knows the whole server universe of a session it hands the array to: the names it
+        placed there, plus the harness's own builtin extension. Anything else is refused.
+
+        Scoped to ``ACP_BACKENDS_SESSION_MCP_ARRAY``, the backends whose array Crew
+        builds and can therefore enumerate; kiro-cli's servers reach it through the agent
+        file and are not enumerated here. Only a TRUSTED identity is judged -- the
+        permission payload's own prose names whatever it likes and is never read.
+        """
+        if self.backend not in ACP_BACKENDS_SESSION_MCP_ARRAY:
+            return False
+        if not (event.mcp_identity_trusted and event.mcp_server_name):
+            return False
+        placed = {
+            element.get("name")
+            for element in self._session_mcp_servers()
+            if isinstance(element, dict) and isinstance(element.get("name"), str)
+        }
+        return event.mcp_server_name not in placed | meta_builtin_server_names()
+
+    def _unclassified_tool_call(self, event: AcpEvent) -> bool:
+        """True when the preceding ``tool_call`` frame classified this call as NOTHING.
+
+        Fail-closed, and deliberately narrow. A call whose identity IS recoverable is
+        left to the checks below this one: :func:`_identified_mcp_call` answers for a
+        served tool, and a resolved shell classification answers for a command. What
+        this catches is the third case -- a frame that said neither, whose permission
+        request carries no ``kind`` either, and which therefore reaches an answering site
+        with no fact any gate can be evaluated against: not a deny set, and not the
+        command-deny tier, which sees a command only when something classified it as one.
+
+        Keyed on the cache rather than on ``shell_classified``: that property is False on
+        MCP frames from harnesses that omit ``kind``, which are identified and must keep
+        their existing path.
+        """
+        if not event.tool_call_id:
+            # No correlation id, so nothing was cached about the call and this check
+            # cannot claim the frame said nothing. The MCP refusal below still applies.
+            return False
+        # A refusal needs POSITIVE evidence that the tool_call frame classified nothing.
+        # A minimal construction with no cache never gathered that evidence, and a
+        # tool_call this session never saw is not evidence either, so both answer False
+        # and leave the call to the MCP checks. Same compatibility shape as the caches in
+        # ``_build_permission_event``.
+        if self.backend not in ACP_BACKENDS_META_IDENTITY:
+            # A harness that publishes no identity channel never opted into this, and the
+            # evidence that it classifies every tool class is a handful of recorded frames
+            # -- enough to show a ``kind`` present, not enough to prove none is ever
+            # missing. Refusing on that would turn a gap in Crew's evidence into a denial
+            # of the harness's own legitimate call.
+            return False
+        recorded = getattr(self, "_tool_call_unclassified", None)
+        if not isinstance(recorded, dict) or not recorded.get(event.tool_call_id, False):
+            return False
+        return _identified_mcp_call(event) is None
 
     def _tripwire_spec_disabled_tool(self, result: AcpEvent) -> None:
         """Make a switched-off tool that RAN loud, whatever let it run.
@@ -9997,6 +10478,91 @@ class AcpClient:
             _ENV_PI_ACP_PI_COMMAND,
             PI_ACP_VERIFIED_VERSION,
         )
+
+    def _note_goose_version(self) -> None:
+        """Log a goose release outside the verified range, at the handshake.
+
+        Complements :meth:`_tripwire_goose_mode` the way :meth:`_note_pi_adapter_version`
+        complements the pi tripwire. The two wire facts that fail closed (the mode
+        read-back, the ``_meta.goose.toolCall`` identity) announce their own loss as
+        refusals; the ``current_mode_update`` emission the tripwire fires on fails open,
+        so its loss on a newer release would be silent. This names the release the
+        session actually RUNS -- ``agentInfo.version`` off ``initialize``, not the file on
+        disk -- once per process per version, so the operator knows where to look if a
+        session that left the required mode is later found still running.
+        """
+        if not self._is_goose:
+            return
+        version = self.agent_version
+        if version.startswith(GOOSE_VERIFIED_VERSION_PREFIX) or version in _goose_versions_noted:
+            return
+        _goose_versions_noted.add(version)
+        logger.warning(
+            "goose reports version %r; the routing contract (mode read-back, "
+            "_meta.goose.toolCall identity, mid-session current_mode_update) was verified "
+            "on %sx. The read-back and the identity check still refuse on their own; the "
+            "mid-session mode tripwire rests on an emission this release may not make.",
+            version or "unknown",
+            GOOSE_VERIFIED_VERSION_PREFIX,
+        )
+
+    async def _tripwire_goose_mode(self, msg: JsonRpcMessage) -> None:
+        """Refuse to continue a goose session that reports leaving the required mode.
+
+        The read-back on ``session/new`` and ``session/load`` proves the mode the session
+        STARTED in. It does not hold the session there: ``session/set_mode`` accepts the
+        auto-approving mode, goose's own slash commands can move it, and 1.50.1 reports
+        every such move as a ``current_mode_update`` on the session's own connection --
+        captured live in ``session-load-live.jsonl``, where one names ``auto`` after a
+        ``set_mode``. In ``auto`` goose asks about nothing, so no permission request
+        reaches Crew to refuse; the notification is the last frame Crew sees before the
+        harness starts saying yes on its own. So it is treated exactly as the read-back
+        treats the same mode on open: the harness is stopped and the turn fails with the
+        gate's own reason. Every frame that is not this one, or that names the required
+        mode (goose re-emits the current mode on load), is a no-op. Gated on the same
+        predicate as the read-back, so the kiro path gains no call (harness-parity H13).
+        """
+        if not self._is_goose:
+            return
+        params = msg.params if isinstance(msg.params, dict) else {}
+        update = params.get("update")
+        if not isinstance(update, dict) or update.get("sessionUpdate") != UPDATE_CURRENT_MODE:
+            return
+        mode_id = update.get("currentModeId")
+        observed = mode_id if isinstance(mode_id, str) else ""
+        issue = acp_tool_gate.seeded_setting_issue(self.backend, _scrub_observed(observed))
+        if not issue:
+            return
+        logger.error(
+            "goose routing: session reported mode %r mid-session, which is not the "
+            "required one; stopping the harness before it approves on its own [session=%s]",
+            observed,
+            self._session_id,
+        )
+        try:
+            sel_module.sel().log_tool_invocation(
+                session_key=self._session_key or "",
+                source="acp",
+                tool_name="session/set_mode",
+                tool_kind="other",
+                outcome="denied",
+                metadata={
+                    "reason": "goose_mode_tripwire",
+                    "backend": self.backend,
+                    "mode": _scrub_observed(observed),
+                },
+            )
+        except Exception:  # pragma: no cover - audit is best-effort
+            logger.debug("goose routing: audit of the mode tripwire failed", exc_info=True)
+        await self._kill_process(force=True)
+        try:
+            acp_tool_gate.enforce_runtime_routing(
+                self.backend,
+                issue,
+                remedy=acp_tool_gate.remediation_for(self.backend),
+            )
+        except acp_tool_gate.ToolGateUnroutable as exc:
+            raise AcpToolGateUnroutable(str(exc)) from None
 
     async def _tripwire_pi_gate(self, msg: JsonRpcMessage) -> None:
         """Refuse to continue a gated session whose harness ran a tool the gate never saw.
@@ -10633,9 +11199,32 @@ class AcpClient:
             # Capture the canonical shell signal from the raw kind BEFORE
             # redaction so the later permission_request event (which carries no
             # kind) can inherit it via the toolCallId cache below.
-            is_shell = _is_shell_kind(kind)
+            # Either harness-authored channel resolves it: an ACP ``kind`` of execute,
+            # or the harness's own ``_meta`` naming its builtin shell. Reading only the
+            # first left a harness that sends the second classified as a non-shell tool,
+            # so its command never reached the command-deny tier at all.
+            _meta_shell = meta_builtin_shell(update)
+            # Asked of the FRAME, not of the local ``kind``: that one is defaulted to the
+            # string "unknown" for display, which is truthy, so reading it would call
+            # every kind-less frame resolved and defeat the refusal below.
+            _wire_kind = update.get("kind")
+            _kind_resolved = isinstance(_wire_kind, str) and bool(_wire_kind)
+            is_shell = _is_shell_kind(kind) or _meta_shell
             if tool_call_id:
                 self._tool_call_is_shell[tool_call_id] = is_shell
+                # An MCP identity is a classification too -- it says "served by a
+                # server", which is not a host command. Unclassified means none of the
+                # three said anything.
+                #
+                # Written through the same compatibility shape as the redaction map
+                # below: an instance allocated with ``__new__`` (embedders do this) has
+                # no such dict, and assigning into a missing one would raise inside the
+                # event builder rather than record anything.
+                _unclassified = getattr(self, "_tool_call_unclassified", None)
+                if _unclassified is not None:
+                    _unclassified[tool_call_id] = not (
+                        _kind_resolved or _meta_shell or bool(_kiro_mcp_server_name(update))
+                    )
                 # Same lifecycle as is_shell: cache the trusted MCP server
                 # identity so the later permission event can inherit it.
                 self._tool_call_mcp_server[tool_call_id] = _kiro_mcp_server_name(update)
@@ -10689,10 +11278,11 @@ class AcpClient:
              follow-up text.
           2. A `status: completed` update with `rawOutput.items[].Json.stdout`
              for shell-style tools.
-        Both carry the same `toolCallId`; we yield an EVENT_TOOL_RESULT on
-        whichever provides output. Hooking these gives the inline pill its real
-        output the moment the tool finishes, instead of waiting for the kiro-cli
-        JSONL flush at the next tool_call boundary or message end.
+        Both carry the same `toolCallId`; we yield an EVENT_TOOL_RESULT when an
+        update provides output or a terminal status. A status-only event carries
+        no output. Hooking these gives the inline pill its real output the moment
+        the tool finishes, instead of waiting for the kiro-cli JSONL flush at the
+        next tool_call boundary or message end.
         """
         params = msg.params or {}
         update = params.get("update", {})
@@ -10701,11 +11291,9 @@ class AcpClient:
         tool_use_id = update.get("toolCallId", "")
         if not tool_use_id:
             return None
-        # Stamped before the output parsing below, which returns None for an
-        # output-less update: a tool that completes with no output is still a
-        # completed round-trip and must not be dropped from the histogram. A
-        # non-terminal status is a no-op, so a mid-stream update leaves the clock
-        # running for the real completion.
+        # A terminal status is useful even when output parsing finds no text: it
+        # closes the observed round-trip without claiming a result body. A
+        # non-terminal status leaves the clock running for the real completion.
         record_tool_call_finished(
             tool_use_id,
             status=update.get("status"),
@@ -10760,9 +11348,17 @@ class AcpClient:
                 if raw_output and "items" not in raw_output:
                     output_parts.append(json.dumps(raw_output, default=str))
 
+        tool_status = str(update.get("status") or "")
         if not output_parts:
-            log_unrenderable_content(logger, tool_use_id, content)
-            return None
+            if tool_status not in TERMINAL_TOOL_STATUSES:
+                log_unrenderable_content(logger, tool_use_id, content)
+                return None
+            return AcpEvent(
+                kind=EVENT_TOOL_RESULT,
+                tool_call_id=tool_use_id,
+                tool_final=tool_status == "completed",
+                tool_status=tool_status,
+            )
 
         final_output = "\n".join(output_parts)
         # Redact the WHOLE join, then bound -- never the reverse. Bounding first
@@ -10771,12 +11367,17 @@ class AcpClient:
         # slice keeps "://user:password" and drops the "@" the prefilter needs,
         # so the password reaches the dashboard in clear text. Same ordering as
         # `_dispatch._build_tool_result_event` and as `_compaction_detail` below.
-        final_output = redact_text(final_output)[:8000]
+        _redacted = redact_text(final_output)
+        tool_output_digest, tool_output_bytes = _measure_tool_output(_redacted)
+        final_output = _redacted[:8000]
         return AcpEvent(
             kind=EVENT_TOOL_RESULT,
             tool_call_id=tool_use_id,
             tool_output=final_output,
+            tool_output_digest=tool_output_digest,
+            tool_output_bytes=tool_output_bytes,
             tool_final=update.get("status") == "completed",
+            tool_status=str(update.get("status") or ""),
         )
 
     def _extract_tool_call_refinement(self, msg: JsonRpcMessage) -> AcpEvent | None:

@@ -635,6 +635,10 @@ _STRUCTURAL_MARKER_RES: tuple[re.Pattern[str], ...] = (
     _REPLY_FORMAT_RULES_RE,
     re.compile(r"\[\s*CRITICAL\s*RULES\s*[-]{1,2}", re.IGNORECASE),
     re.compile(r"\[\s*CURRENT\s*USER\s*REQUEST\s*[-]{1,2}", re.IGNORECASE),
+    # Forging this opener escalates attacker text above agent-prompt style rules,
+    # so the genuine frame is minted only after the untrusted-context scrub.
+    re.compile(r"\[\s*RESPONSE\s*PREFERENCES\s*[-]{1,2}", re.IGNORECASE),
+    re.compile(r"\[\s*END\s*RESPONSE\s*PREFERENCES\s*\]", re.IGNORECASE),
     # Post-compaction skills re-injection boundary. Unlike the ``[SESSION
     # CONTEXT …]`` OPEN marker (omitted above because forging it only opens a
     # "background, do not act on this" block), forging THIS open marker is an
@@ -1794,6 +1798,186 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     )
 
 
+_RESPONSE_PREFERENCES_HEADER = "[RESPONSE PREFERENCES — MANDATORY]"
+_RESPONSE_PREFERENCES_FOOTER = "[END RESPONSE PREFERENCES]"
+
+
+def _reply_style_rules(level: str) -> str:
+    """Return the rule text for one ``dashboard.verbosity`` level.
+
+    ``""`` for ``default`` and for any value the enum does not know, so a
+    config edited by hand to an unrecognised level injects nothing rather
+    than a half-formed block.
+    """
+    if level == "ultra":
+        return (
+            "## Reply style: Ultra-Brief (ADHD reader)\n\n"
+            "Before responding, simulate the reader: they will read the "
+            "first 2 sentences, scan for bold text and code blocks, then "
+            "close the tab. Anything they won't reach is wasted tokens. "
+            "Structure for THAT reader, not an attentive one.\n\n"
+            "You have a strong bias toward completeness. Override it. The "
+            "reader's time costs more than your thoroughness. An answer "
+            "that's 80% complete in 2 lines beats 100% complete in 20 "
+            "lines. Missing a caveat is acceptable. Missing an edge case "
+            "is acceptable.\n\n"
+            "Rules:\n"
+            "- Open with THE answer in 1–2 sentences. Bold the single most "
+            "critical point.\n"
+            "- Supporting bullets only if the reader would be STUCK without "
+            "them. Max 3. Each bullet is one short sentence.\n"
+            '- Take a position. Name your pick. Resolve "it depends" '
+            "immediately.\n"
+            "- Do NOT add: tables, headers, numbered lists > 3 items, "
+            '"common pitfalls", "also consider", multi-section layouts, '
+            'or any content that fails the test: "would the reader be '
+            'stuck without this line?"\n'
+            "- Code blocks and commands are the answer — never cut them.\n"
+            "- Stakes change what you must not omit, never the length: "
+            "security warnings and irreversible-action confirmations "
+            "always appear, each as one line naming the call, the risk, "
+            "and whether it can be undone; the mechanism and the failure "
+            "modes are not required. Ordered multi-step instructions "
+            "where a dropped step causes a mistake stay complete, and "
+            "code, commands, paths, identifiers and error strings stay "
+            "verbatim.\n"
+            "- When the user ASKS for something long (design doc, tutorial, "
+            "full implementation), ignore these constraints and deliver "
+            "what was asked.\n"
+            "- Required output formats are sacred and never cut: "
+            "[OPTIONS:] lines, diff blocks for file changes, full PR/MR "
+            "URLs, and any format the rendering surface "
+            "needs. These go in their required position regardless of "
+            "brevity.\n"
+            "- Preserve the user's language."
+        )
+    if level == "concise":
+        return (
+            "## Reply style: Concise\n\n"
+            "Concise mode is on. Reduce length without losing substance:\n"
+            "- Lead with the answer or result. Skip preamble, filler, and "
+            'pleasantries (e.g. "Sure!", "Great question", "I\'d be happy '
+            'to", "basically", "let me…").\n'
+            "- Keep progress signal brief, not absent: a short high-level note "
+            "of what you're doing or will do next is fine (it builds confidence "
+            "about what's happening underneath), but skip step-by-step "
+            "play-by-play and low-level detail that isn't needed for a quick "
+            "understanding. Favor the outcome; mention process only at a high "
+            "level.\n"
+            "- Prefer short sentences and fragments; cut hedging and "
+            "repetition; state each fact once.\n"
+            "- Structure over sprawl: tight bullets, surface the "
+            "recommendation, take a position instead of dumping every option.\n"
+            "- Don't paste long logs, file dumps, or command output unless "
+            "asked — quote the shortest decisive line.\n"
+            "- Keep code, commands, paths, identifiers, and error strings "
+            "verbatim and complete. Brevity is for prose, never correctness.\n"
+            "- Preserve the user's language; compress the style, not the "
+            "content.\n\n"
+            "Stakes change what concise mode must not omit, never how "
+            "long it may run: security warnings and irreversible-action "
+            "confirmations always appear, each as one line naming the "
+            "call, the risk, and whether it can be undone; the mechanism "
+            "and the failure modes are not required. Likewise, multi-step "
+            "instructions where order or omissions could cause a mistake "
+            "stay complete."
+        )
+    if level == "answer_only":
+        return (
+            "## Reply style: Answer Only\n\n"
+            "Say only the answer. Write for a five-year-old: the smallest "
+            "words that are still true, one idea per sentence, no term that "
+            "is not itself the fact. Short paragraphs. Break lines only where "
+            "structure needs it (list, step, heading) — never one sentence "
+            "per line.\n\n"
+            "Run three checks, in order, before you write:\n\n"
+            "1. Shape check. Does the answer have a shape — steps, "
+            "before/after, cases and verdicts, sizes? Then draw it. A "
+            "picture is payload, not prose: it replaces the words, never "
+            "repeats them. Use the richest form this surface renders: an "
+            "inline widget, an HTML artifact or a mermaid fence ONLY when "
+            "your instructions carry an Inline Widgets section; on any other "
+            "surface (a chat channel, a CLI) a plain table — widget, HTML or "
+            "mermaid markup lands there as raw text. A picture holds labels "
+            "of one to three words and numbers, never a sentence. If a "
+            "sentence is needed, it goes under the picture, once.\n"
+            "2. Word check. Each sentence: at most 12 words. Each word: one "
+            "the user has used, or one a child knows. A word that fails "
+            "both is replaced, or defined in three words.\n"
+            "3. Cut check. Delete: preamble, what you did, where you found "
+            "it, why, options you rejected, caveats, offers to help. Keep: "
+            "the answer; code, commands and paths the user asked for or "
+            "must run, verbatim; every step of an ordered procedure, in "
+            "order; any required format ([OPTIONS:], diffs, PR links); one "
+            "undo line for anything destructive; one risk line for anything "
+            "touching security, data or spend.\n\n"
+            "Asked why? Teach it, do not state it. One picture from daily "
+            "life: a dog, a door. Keep it to the end. An objection is a "
+            "character in it. The reasons, numbered, one short line each, "
+            "in the picture's words. End: what it is, one line. Word check "
+            "still runs. Cut check spares the picture and the reasons. This "
+            "reply may run long.\n"
+            'Not asked? Offer it in three words: "say why".\n'
+            'Asked for depth (a doc, a walkthrough, "in detail")? This '
+            "mode is off for that reply.\n\n"
+            "Reply in the user's language."
+        )
+    return ""
+
+
+def _response_preferences_apply(session_key: str, runtime_source: str | None = None) -> bool:
+    """Whether the reply-style block belongs in this session's context.
+
+    The rules describe how the PERSON wants to read replies, so they apply to
+    every session whose final message a person reads — dashboard, every
+    messaging channel, a cron digest. A ``subagent:`` session is the one kind
+    whose final message is read by its PARENT agent instead: the parent needs
+    the caveats and edge cases the ``ultra`` and ``answer_only`` levels tell
+    the writer to drop, so the block is withheld there. Resolved through the
+    same runtime-source seam as ``[RUNTIME]``, so a sub-agent is recognised the
+    way every other transport is.
+    """
+    return _resolve_runtime_source(session_key or "", runtime_source) != "subagent"
+
+
+def _build_response_preferences_section(cfg: "KiroCrewConfig") -> str:
+    """Build the [RESPONSE PREFERENCES] block from ``dashboard.verbosity``.
+
+    The setting describes how the PERSON wants replies to read, so it is
+    chrome for every person-facing agent — built-in, custom, and cron — rather
+    than a token an agent prompt has to opt into. Sub-agents are the exception:
+    their final message is read by a parent agent that needs full detail.
+
+    ``build_message`` must mint this trusted frame only after it scrubs session
+    context. Both frame markers are structural markers, so placing the genuine
+    frame inside the scrubbed context would neutralize it along with forgeries.
+    The earlier ``{{VERBOSITY_BLOCK}}`` token reached 7 of the 84 agent specs on
+    one real install; the 77 others ran with the setting silently ignored.
+
+    The wrapper is deliberately loud (a bracketed MANDATORY header, an explicit
+    precedence sentence) because the block competes with a long agent prompt
+    that carries its own style guidance; a bare ``##`` heading in the middle of
+    the context would have no stated rank against it.
+
+    Returns ``""`` when the level is ``default`` or unrecognised, so installs
+    that never touched the setting see byte-identical context.
+    """
+    level = getattr(getattr(cfg, "dashboard", None), "verbosity", "default")
+    rules = _reply_style_rules(level if isinstance(level, str) else "default")
+    if not rules:
+        return ""
+    return (
+        f"{_RESPONSE_PREFERENCES_HEADER}\n"
+        "The user chose how your replies must read. These rules bind EVERY "
+        "reply in this session, on every surface, for every agent, and they "
+        "OUTRANK any response-style guidance in your agent prompt. They shape "
+        "prose only: code, commands, paths, identifiers, error strings and any "
+        "required output format stay exactly as they are.\n\n"
+        f"{rules}\n"
+        f"{_RESPONSE_PREFERENCES_FOOTER}\n\n"
+    )
+
+
 def steering_target_admissible(resolved: Path, base: Path | None = None) -> bool:
     """Admission gate for a steering document's RESOLVED path.
 
@@ -2860,120 +3044,12 @@ class ContextBuilder:
 
         cfg = KiroCrewConfig.load()
 
-        # Verbosity control — applies to ALL transports (dashboard, Slack, CLI).
-        # Resolved before the dashboard-only widget branch below so it reaches
-        # every session. When "default", nothing is injected (zero prompt bloat).
-        verbosity = getattr(cfg.dashboard, "verbosity", "default")
-        if verbosity == "ultra":
-            verbosity_block = (
-                "## Response Verbosity: Ultra-Brief (ADHD reader)\n\n"
-                "Before responding, simulate the reader: they will read the "
-                "first 2 sentences, scan for bold text and code blocks, then "
-                "close the tab. Anything they won't reach is wasted tokens. "
-                "Structure for THAT reader, not an attentive one.\n\n"
-                "You have a strong bias toward completeness. Override it. The "
-                "reader's time costs more than your thoroughness. An answer "
-                "that's 80% complete in 2 lines beats 100% complete in 20 "
-                "lines. Missing a caveat is acceptable. Missing an edge case "
-                "is acceptable.\n\n"
-                "Rules:\n"
-                "- Open with THE answer in 1–2 sentences. Bold the single most "
-                "critical point.\n"
-                "- Supporting bullets only if the reader would be STUCK without "
-                "them. Max 3. Each bullet is one short sentence.\n"
-                '- Take a position. Name your pick. Resolve "it depends" '
-                "immediately.\n"
-                "- Do NOT add: tables, headers, numbered lists > 3 items, "
-                '"common pitfalls", "also consider", multi-section layouts, '
-                'or any content that fails the test: "would the reader be '
-                'stuck without this line?"\n'
-                "- Code blocks and commands are the answer — never cut them.\n"
-                "- Stakes change what you must not omit, never the length: "
-                "security warnings and irreversible-action confirmations "
-                "always appear, each as one line naming the call, the risk, "
-                "and whether it can be undone; the mechanism and the failure "
-                "modes are not required. Ordered multi-step instructions "
-                "where a dropped step causes a mistake stay complete, and "
-                "code, commands, paths, identifiers and error strings stay "
-                "verbatim.\n"
-                "- When the user ASKS for something long (design doc, tutorial, "
-                "full implementation), ignore these constraints and deliver "
-                "what was asked.\n"
-                "- Required output formats are sacred and never cut: "
-                "[OPTIONS:] lines, diff blocks for file changes, full PR/MR "
-                "URLs, and any format the rendering surface "
-                "needs. These go in their required position regardless of "
-                "brevity.\n"
-                "- Preserve the user's language."
-            )
-        elif verbosity == "concise":
-            verbosity_block = (
-                "## Response Verbosity: Concise\n\n"
-                "Concise mode is on. Reduce length without losing substance:\n"
-                "- Lead with the answer or result. Skip preamble, filler, and "
-                'pleasantries (e.g. "Sure!", "Great question", "I\'d be happy '
-                'to", "basically", "let me…").\n'
-                "- Keep progress signal brief, not absent: a short high-level note "
-                "of what you're doing or will do next is fine (it builds confidence "
-                "about what's happening underneath), but skip step-by-step "
-                "play-by-play and low-level detail that isn't needed for a quick "
-                "understanding. Favor the outcome; mention process only at a high "
-                "level.\n"
-                "- Prefer short sentences and fragments; cut hedging and "
-                "repetition; state each fact once.\n"
-                "- Structure over sprawl: tight bullets, surface the "
-                "recommendation, take a position instead of dumping every option.\n"
-                "- Don't paste long logs, file dumps, or command output unless "
-                "asked — quote the shortest decisive line.\n"
-                "- Keep code, commands, paths, identifiers, and error strings "
-                "verbatim and complete. Brevity is for prose, never correctness.\n"
-                "- Preserve the user's language; compress the style, not the "
-                "content.\n\n"
-                "Stakes change what concise mode must not omit, never how "
-                "long it may run: security warnings and irreversible-action "
-                "confirmations always appear, each as one line naming the "
-                "call, the risk, and whether it can be undone; the mechanism "
-                "and the failure modes are not required. Likewise, multi-step "
-                "instructions where order or omissions could cause a mistake "
-                "stay complete."
-            )
-        elif verbosity == "answer_only":
-            verbosity_block = (
-                "## Response Verbosity: Answer Only\n\n"
-                "Say only the answer. Small words. Short lines. One idea per "
-                "line.\n\n"
-                "Run three checks, in this order, before you write:\n\n"
-                "1. Shape check. Does the answer have a shape — steps, "
-                "before/after, cases and verdicts, sizes? Then draw it, in the "
-                "richest form this surface renders: a widget or a mermaid fence "
-                "when your instructions carry an Inline Widgets section, else a "
-                "plain table. A picture holds labels of one to three words and "
-                "numbers, never a sentence. If a sentence is needed, it goes "
-                "under the picture, once.\n"
-                "2. Word check. Each sentence: at most 12 words. Each word: one "
-                "the user has used, or one a child knows. A word that fails "
-                "both is replaced, or defined in three words.\n"
-                "3. Cut check. Delete: preamble, what you did, where you found "
-                "it, why, options you rejected, caveats, offers to help. Keep: "
-                "the answer; code, commands and paths the user asked for or "
-                "must run, verbatim; every step of an ordered procedure, in "
-                "order; any required format ([OPTIONS:], diffs, PR links); one "
-                "undo line for anything destructive; one risk line for anything "
-                "touching security, data or spend.\n\n"
-                "Asked why? Teach it, do not state it. One picture from daily "
-                "life: a dog, a door. Keep it to the end. An objection is a "
-                "character in it. The reasons, numbered, one short line each, "
-                "in the picture's words. End: what it is, one line. Word check "
-                "still runs. Cut check spares the picture and the reasons. This "
-                "reply may run long.\n"
-                'Not asked? Offer it in three words: "say why".\n'
-                'Asked for depth (a doc, a walkthrough, "in detail")? This '
-                "mode is off for that reply.\n\n"
-                "Reply in the user's language."
-            )
-        else:
-            verbosity_block = ""
-        prompt = prompt.replace("{{VERBOSITY_BLOCK}}", verbosity_block)
+        # A copied agent spec may still carry the retired
+        # ``{{VERBOSITY_BLOCK}}`` token (it lived in every shipped prompt until
+        # the block moved into session context). Strip it so the literal
+        # never reaches the model; the preferences themselves arrive through
+        # ``_build_response_preferences_section``.
+        prompt = prompt.replace("{{VERBOSITY_BLOCK}}", "")
 
         # Widgets and artifacts need a chat window to render in, which is a
         # property of where the session is DISPLAYED, not where it started: a
@@ -3414,7 +3490,8 @@ class ContextBuilder:
             # reason [CURRENT AGENT]/[RUNTIME] do — it is chrome, not style.
             # ~40 tokens against the 30-50k this mode saves, and nothing at all
             # for installs on the default (auto) language.
-            parts.append(_build_ui_language_section(KiroCrewConfig.load()))
+            _min_cfg = KiroCrewConfig.load()
+            parts.append(_build_ui_language_section(_min_cfg))
             logger.debug(
                 "Minimal session context: agent=%s, %d chars",
                 agent_label,
@@ -4287,6 +4364,14 @@ class ContextBuilder:
                         + session_ctx
                         + "[END OF SESSION CONTEXT]\n\n"
                     )
+            # Mint trusted reply-style framing only after the session-context
+            # payload has been scrubbed. Its own markers are intentionally in the
+            # scrub set, so placing it inside ``session_ctx`` would erase it.
+            if _response_preferences_apply(session_key or "", runtime_source):
+                _prefs = _build_response_preferences_section(KiroCrewConfig.load())
+                if _prefs:
+                    parts.append(_prefs)
+
             # Session replay: inject OUTSIDE the capped session context so it
             # doesn't get truncated at 165K. This is the full conversation
             # history from KiroCrew's conversation_log — provider-agnostic.
@@ -4360,6 +4445,18 @@ class ContextBuilder:
                         + _neutralize_structural_markers(skills_ctx)
                         + "\n[END REINJECTED]\n\n"
                     )
+            # The reply-style block is session-start context too, and unlike
+            # the skills index its loss is invisible: the model simply drifts
+            # back to default-length prose. Re-read the CURRENT setting so a
+            # level changed mid-session lands here as well. Trusted framing
+            # (config enum, no user text), so no payload scrub is needed.
+            _prefs = (
+                _build_response_preferences_section(KiroCrewConfig.load())
+                if _response_preferences_apply(session_key or "", runtime_source)
+                else ""
+            )
+            if _prefs:
+                parts.append("[REINJECTED AFTER COMPACTION — response preferences]\n" + _prefs)
             # Member identity is session-start context too, so a compaction
             # dropped it along with the skills index: without this, the next
             # turn of a member DM thread runs with no identity, no working

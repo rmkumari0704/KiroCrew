@@ -11,7 +11,11 @@ resume.
 
 This module also provides Kiro Crew's shared orchestration substrate: run
 identity, lifecycle state, event history, exact source, provenance, cancellation
-binding, and the reusable definition library. Python dynamic workflows are one
+binding, and the reusable definition library. `RunRegistry.has_pending_work_for`
+provides a session-scoped, in-memory execution/terminal-handoff query for
+conversation-completion notifications. A terminal run whose driver has not
+exited still owns its handoff; no event or result snapshot is built for this
+query. Python dynamic workflows are one
 driver of that substrate. TaskRunner is another, stricter product layer: it uses
 the common substrate but keeps its planning, approval, retry, test,
 git/worktree, replan, persistence, and cleanup semantics.

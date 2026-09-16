@@ -16,6 +16,7 @@ from typing import Any
 from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
@@ -63,6 +64,15 @@ EVENT_THINKING_CHUNK = "thinking_chunk"
 EVENT_TOOL_CALL = "tool_call"
 EVENT_TOOL_CALL_UPDATE = "tool_call_update"
 EVENT_TOOL_RESULT = "tool_result"
+#: The ``tool_status`` values that mean a tool call REACHED a terminal state.
+#:
+#: One definition rather than one per site, because three sites have to agree on
+#: it and cannot be checked against each other: the two update parsers decide
+#: whether an output-less frame still reports its status, and the runner's result
+#: handler decides whether to close the call in the durable record. A set that
+#: drifts between them either invents a closer the stream never sent or records
+#: ``unknown`` for an outcome the stream did report.
+TERMINAL_TOOL_STATUSES = frozenset({"completed", "failed", "cancelled", "canceled", "refused"})
 EVENT_PERMISSION_REQUEST = "permission_request"
 EVENT_COMPLETE = "complete"
 EVENT_COMPACTION_STATUS = "compaction_status"
@@ -196,6 +206,7 @@ PROVIDER_LABEL_KAS = "kas"
 PROVIDER_LABEL_CODEX = "codex"
 PROVIDER_LABEL_OPENCODE = "opencode"
 PROVIDER_LABEL_PI = "pi"
+PROVIDER_LABEL_GOOSE = "goose"
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under
@@ -562,7 +573,22 @@ class AcpEvent:
     #: cannot lose the directive. See
     #: docs/system-specs/modules/agent-host-contract.md §9.
     tool_output: str = ""
+    #: SHA-256 and UTF-8 byte length of the full redacted result before the
+    #: display-only ``tool_output`` bound. Empty digest plus -1 means the frame
+    #: carried no result payload; a measured empty payload has byte length 0.
+    tool_output_digest: str = ""
+    tool_output_bytes: int = -1
     tool_final: bool = False  # True when this tool_result is the final (status=completed) update
+    #: The backend's own status on this ``tool_call_update``, verbatim and
+    #: unmapped: ``completed``, ``failed``, and whatever else it sends.
+    #:
+    #: ``tool_final`` is NOT a substitute. It is true only for ``completed``,
+    #: because the transcript paths that read it credit and finalise a successful
+    #: call -- so a FAILED tool leaves it false and every consumer keyed on it
+    #: skips the frame. A durable record must not: a call that failed reached a
+    #: terminal state and has to be recorded as failed rather than left open and
+    #: swept up later as an unknown outcome.
+    tool_status: str = ""
     usage: TurnUsage = field(default_factory=TurnUsage)
     raw_tool_params: dict | None = (
         None  # original tool params before diff conversion (for file-chip snapshots)

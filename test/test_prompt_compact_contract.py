@@ -50,10 +50,9 @@ def test_template_slots_remain_complete_and_unique(name: str) -> None:
     assert re.findall(r"\{\{([A-Z_]+)\}\}", text) == [
         "MAX_SUBAGENTS",
         "WIDGET_BLOCK",
-        "VERBOSITY_BLOCK",
     ]
     assert text.count("{bot_name}") == 1
-    assert text.rstrip().endswith("{{WIDGET_BLOCK}}\n\n{{VERBOSITY_BLOCK}}")
+    assert text.rstrip().endswith("{{WIDGET_BLOCK}}")
 
 
 @pytest.mark.parametrize("name", PROMPT_BYTE_CEILINGS)

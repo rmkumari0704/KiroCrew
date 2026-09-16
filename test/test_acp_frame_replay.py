@@ -73,7 +73,11 @@ from acp_frame_replay_harness import (
 )
 
 from kiro_crew.acp._dispatch import agent_version_from_init, classify_notification
-from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_KNOWN,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -376,3 +380,78 @@ def test_the_snapshot_writer_never_records_telemetry(tmp_path) -> None:
     assert out.stdout.strip() == "0 False", (
         "the snapshot writer imported the parsers with telemetry live: " f"{out.stdout.strip()!r}"
     )
+
+
+def test_a_numeric_handshake_fixture_requires_a_protocol_version_row() -> None:
+    """A harness whose OWN wire answers a numeric version must not be sent a date string.
+
+    ``_PROTOCOL_VERSION_BY_BACKEND`` is read with ``.get(backend, PROTOCOL_VERSION)``, so
+    an id with no row silently speaks kiro-cli's date-stamped dialect. That default is
+    right for the kiro family and wrong for every spec adapter, and what it produces is
+    not a crash: the harness may accept the handshake and negotiate, so the only evidence
+    is the version that went out.
+
+    Derived from the CORPUS rather than from a list of ids, which is what makes this the
+    general form. Each backend's own ``initialize`` response is the authority on which
+    dialect it speaks, and those responses are already committed here as the thing this
+    module replays. So a fifth harness that records a numeric handshake and forgets the
+    row fails HERE with no edit to this test.
+
+    The kiro FAMILY is exempt, and the exemption is the one thing that has to be named
+    rather than derived. Those two ARE the date-stamped dialect -- the default this table
+    exists to override -- and they answer numerically because ACP's handshake NEGOTIATES:
+    a numeric response says which version the agent chose, not which version the client
+    must send. KAS is the live proof that the two can differ, since it is shipped and
+    selectable with no row. So membership of this pair is what a reader must check, and
+    adding an id to it is a claim that the harness accepts the date string.
+
+    That is also why a numeric response alone is not proof of a bug. For the harness this
+    ratchet was written for it happens to be: sent the date string, goose 1.50.1 refuses
+    ``initialize`` outright with ``-32602 Invalid params``, so the missing row was a
+    session that could not start rather than a cosmetic mismatch. A future harness might
+    negotiate instead, and the row is still right for it -- Crew should send what the
+    harness speaks.
+    """
+    from kiro_crew.acp.client import _PROTOCOL_VERSION_BY_BACKEND
+
+    # The kiro family: handed the date-stamped version by construction, and named here
+    # rather than inferred so an addition is a decision a reviewer sees.
+    date_stamped_family = {ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
+
+    missing: list[str] = []
+    checked: list[str] = []
+    for directory in backend_dirs():
+        for path in sorted(directory.glob("*.jsonl")):
+            lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if not lines:
+                continue
+            backend = (json.loads(lines[0]).get("_meta") or {}).get("backend")
+            if backend is None or backend not in ACP_BACKENDS_KNOWN:
+                continue
+            if backend in date_stamped_family:
+                continue
+            for line in lines[1:]:
+                result = json.loads(line).get("result")
+                if not isinstance(result, dict) or "protocolVersion" not in result:
+                    continue
+                # An integer is the SPEC dialect; kiro-cli answers with a date string.
+                # ``bool`` is an int subclass and would be a malformed frame, so it is
+                # excluded rather than read as a version.
+                version = result["protocolVersion"]
+                if isinstance(version, bool) or not isinstance(version, int):
+                    continue
+                checked.append(f"{backend} ({path.name})")
+                if backend not in _PROTOCOL_VERSION_BY_BACKEND:
+                    missing.append(
+                        f"{backend}: {path.name} answers protocolVersion {version!r}, but "
+                        "the backend has no _PROTOCOL_VERSION_BY_BACKEND row, so Crew "
+                        "sends the date-stamped version instead"
+                    )
+                break
+
+    assert checked, (
+        "no fixture outside the kiro family carries a numeric initialize response, so "
+        "this ratchet is vacuous -- either the corpus lost its handshake captures, the "
+        "_meta backend ids drifted, or the exempt family grew to cover everything"
+    )
+    assert missing == [], "\n".join(missing)

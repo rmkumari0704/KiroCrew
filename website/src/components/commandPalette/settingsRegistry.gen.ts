@@ -1547,22 +1547,22 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Enable remote instance management"
   },
   {
-    "id": "notifications.sound-category-turn",
-    "labelKey": "pages.settings.notificationsPanel.category_turn",
-    "tab": "notifications",
-    "type": "select",
-    "occurrence": 1,
-    "label": "Agent replies",
-    "description": "When the agent finishes a turn in any chat"
-  },
-  {
     "id": "notifications.sound-category-approval",
     "labelKey": "pages.settings.notificationsPanel.category_approval",
     "tab": "notifications",
     "type": "select",
     "occurrence": 1,
-    "label": "Approval",
-    "description": "Tool approval requests"
+    "label": "Approvals and questions",
+    "description": "When the agent needs a tool approval or an answer"
+  },
+  {
+    "id": "notifications.sound-category-turn",
+    "labelKey": "pages.settings.notificationsPanel.category_turn",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "label": "Conversation handoffs",
+    "description": "When a conversation finishes or pauses for your input"
   },
   {
     "id": "notifications.sound-category-cron",

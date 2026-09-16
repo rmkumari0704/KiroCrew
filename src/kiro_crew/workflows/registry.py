@@ -691,6 +691,21 @@ class RunRegistry:
         return loaded
 
     # --- queries ---
+    def has_pending_work_for(self, session_key: str) -> bool:
+        """Whether this session still owns execution or a terminal handoff.
+
+        A terminal status can precede its durable flush and completion callback.
+        The driving task keeps that handoff pending until it actually exits.
+        """
+        return bool(session_key) and any(
+            handle.session_key == session_key
+            and (
+                handle.status == STATUS_RUNNING
+                or (handle.task is not None and not handle.task.done())
+            )
+            for handle in self._runs.values()
+        )
+
     def get(self, run_id: str) -> Optional[RunHandle]:
         return self._runs.get(run_id)
 

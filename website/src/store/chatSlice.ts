@@ -10,6 +10,7 @@ import { isChatPageSurface } from '../utils/channelOrigin'
 import { isSystemNoticeKind } from '../lib/systemNotice'
 import { isStopEvent } from '../lib/stopEvent'
 import { isNoteRow } from '../lib/noteContract'
+import type { ToolAction } from '../utils/toolAction'
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { gcSessionStorage } from '../utils/storageGc'
 import type { RootState } from './index'
@@ -322,6 +323,57 @@ export const mcpAppKey = (sessionKey: string, toolCallId: string): string =>
 /** Max MCP App render payloads retained per slot (each carries multi-MB HTML);
  *  oldest are evicted past this bound. */
 const MCP_APPS_PER_SLOT_MAX = 24
+
+/** Per-entry ceiling on a tool result, and on its input, held in the live
+ *  tool log. The server caps either at 1 MB (`_redact_tool_field`), and the
+ *  log keeps 100 entries per open pane until the next user message — which in
+ *  an autonomous or monitor-loop session can be hours away. Uncapped, that is
+ *  ~100 MB of multi-hundred-KB strings per pane, and V8 parks strings that
+ *  size in large-object space, the region a long-lived renderer exhausts
+ *  first. Above the ceiling the head and tail are kept around a marker: the
+ *  head carries the command echo, the tail the exit status or error, and the
+ *  middle is the bulk. The full result stays on the server and is served on
+ *  reload via the tool message's `meta.output`, so this trims only the live
+ *  copy. */
+export const TOOL_OUTPUT_MAX_CHARS = 64_000
+const TOOL_OUTPUT_HEAD_CHARS = 48_000
+const TOOL_OUTPUT_TAIL_CHARS = 12_000
+const TOOL_OUTPUT_SNAP_WINDOW = 2_000
+
+/** Clamp a tool result to `TOOL_OUTPUT_MAX_CHARS`, keeping head + tail.
+ *
+ *  Each cut snaps to a line break within `TOOL_OUTPUT_SNAP_WINDOW` of its raw
+ *  offset so neither side of the marker starts with a short mid-line fragment.
+ *  A cut without a nearby usable line break keeps its raw offset, preserving
+ *  the intended head and tail budgets. The marker carries the exact number of
+ *  characters elided between the two slices. */
+export function clampToolOutput(output: string): string {
+  if (output.length <= TOOL_OUTPUT_MAX_CHARS) return output
+  const headCut = output.lastIndexOf('\n', TOOL_OUTPUT_HEAD_CHARS)
+  const headEnd = headCut >= TOOL_OUTPUT_HEAD_CHARS - TOOL_OUTPUT_SNAP_WINDOW
+    ? headCut
+    : TOOL_OUTPUT_HEAD_CHARS
+  const rawTailStart = output.length - TOOL_OUTPUT_TAIL_CHARS
+  let tailStart = rawTailStart
+  if (output[rawTailStart - 1] !== '\n') {
+    const tailCut = output.indexOf('\n', rawTailStart)
+    if (
+      tailCut >= 0
+      && tailCut < rawTailStart + TOOL_OUTPUT_SNAP_WINDOW
+      && tailCut + 1 < output.length
+    ) tailStart = tailCut + 1
+  }
+  const parts = [
+    output.slice(0, headEnd),
+    '\n',
+    i18nT('store.chatSlice.truncated_chars', { count: tailStart - headEnd }),
+    '\n',
+    output.slice(tailStart),
+  ]
+  // V8's multi-part Array#join path copies the characters into a fresh
+  // sequential string instead of retaining the sliced parents through a cons.
+  return parts.join('')
+}
 
 /** Drop every MCP App render payload belonging to `sessionKey` (slot deleted
  *  or its conversation cleared — the tool rows the apps hang off are gone). */
@@ -812,7 +864,7 @@ interface ChatState {
   slotRunning: boolean
   slotStopping: boolean
   slotState: SlotState
-  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>
+  slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; derivedTitle?: string; derivedAction?: ToolAction; derivedMore?: number; toolCallId?: string }>
   slotHasMore: boolean
   slotOldestIndex: number
   /** Slot the cursor above describes. A switch moves activeSlot first, so
@@ -1257,7 +1309,6 @@ function applyNonActiveFrame(
   const msgs = (state.slotMessages[safeKey(slot)] ??= [])
   const run = (state.slotRun[safeKey(slot)] ??= { state: 'idle' })
   const sa = (state.slotActivity[safeKey(slot)] ??= { toolLog: [], subagents: {} })
-  const toolLog = sa.toolLog
 
   const effectiveKind = kind ?? (meta?.kind as string | undefined)
   if (effectiveKind === 'stop_event') {
@@ -1301,14 +1352,6 @@ function applyNonActiveFrame(
       const filtered = msgs.filter(m => !(m.role === 'thinking' && !m.content))
       msgs.length = 0
       msgs.push(...filtered)
-    }
-    const last = toolLog[toolLog.length - 1]
-    if (last?.type === 'reasoning') last.text += content
-    else {
-      toolLog.push({ type: 'reasoning', text: content, ts: Date.now() })
-      // Cap the non-active slot's tool log (mirrors the sseToolActivity cap)
-      // so a long background-pane turn can't grow slotActivity without bound.
-      if (toolLog.length > 100) toolLog.splice(0, toolLog.length - 100)
     }
     let streamIdx = -1
     for (let i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'streaming') { streamIdx = i; break } }
@@ -4597,7 +4640,7 @@ const chatSlice = createSlice({
      *  merged into it (see the `tool_call` case in useWebSocket) without a
      *  refinement of one call inheriting a sibling's purpose when tools run in
      *  parallel. */
-    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string; toolCallId?: string }>) {
+    setSlotStatusDetail(state, action: PayloadAction<{ slot: string; kind: string; text: string; ts: number; toolName?: string; derivedTitle?: string; derivedAction?: ToolAction; derivedMore?: number; toolCallId?: string }>) {
       const { slot, ...detail } = action.payload
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
@@ -5397,7 +5440,7 @@ const chatSlice = createSlice({
         if (cached) apply(cached)
       }
     },
-    sseToolActivity(state, action: PayloadAction<{ slot: string; tool: string; kind: string; purpose: string; input_preview: string; auto?: boolean; tool_call_id?: string; is_update?: boolean; is_shell?: boolean }>) {
+    sseToolActivity(state, action: PayloadAction<{ slot: string; tool: string; kind: string; purpose: string; input_preview: string; auto?: boolean; tool_call_id?: string; is_update?: boolean; is_shell?: boolean; tool_name?: string; mcp_server?: string }>) {
       if (isUnsafeKey(action.payload.slot)) return
       const log = action.payload.slot !== state.activeSlot
         ? (state.slotActivity[safeKey(action.payload.slot)] ??= { toolLog: [], subagents: {} }).toolLog
@@ -5414,16 +5457,20 @@ const chatSlice = createSlice({
         if (existing) {
           if (action.payload.tool) existing.text = action.payload.tool
           if (action.payload.purpose) existing.purpose = action.payload.purpose
-          if (action.payload.input_preview) existing.input = action.payload.input_preview
+          if (action.payload.input_preview) existing.input = clampToolOutput(action.payload.input_preview)
           if (action.payload.kind) existing.kind = action.payload.kind
           if (action.payload.is_shell !== undefined) existing.is_shell = action.payload.is_shell
+          if (action.payload.tool_name) existing.tool_name = action.payload.tool_name
+          if (action.payload.mcp_server) existing.mcp_server = action.payload.mcp_server
           // Update ts for recency sorting but NEVER overwrite executionStartedAt
           // — the elapsed timer must reflect real wall time since the tool began.
           existing.ts = Date.now()
           return
         }
       }
-      log.push({ type: 'tool', text: action.payload.tool, purpose: action.payload.purpose, input: action.payload.input_preview, kind: action.payload.kind, ts: Date.now(), auto: action.payload.auto, tool_call_id: action.payload.tool_call_id, is_shell: action.payload.is_shell })
+      // `input` is fed by the server's `input_preview`, which `_redact_tool_field`
+      // caps at the same 1 MB as a result, so it takes the same clamp.
+      log.push({ type: 'tool', text: action.payload.tool, purpose: action.payload.purpose, input: clampToolOutput(action.payload.input_preview), kind: action.payload.kind, ts: Date.now(), auto: action.payload.auto, tool_call_id: action.payload.tool_call_id, is_shell: action.payload.is_shell, tool_name: action.payload.tool_name, mcp_server: action.payload.mcp_server })
       if (log.length > 100) log.splice(0, log.length - 100)
     },
     sseActivityEvent(state, action: PayloadAction<{ slot: string; kind: string; text: string; approval_id?: string; approval_type?: string }>) {
@@ -5472,10 +5519,11 @@ const chatSlice = createSlice({
       // the server, which writes the same redacted string to the same field
       // (chat_runner.py EVENT_TOOL_RESULT), so live and reloaded state agree.
       //
-      // Restricted to launch results on purpose. `toolLog` is capped at 100
-      // entries but `state.messages` is not, and a single output can reach the
-      // server's 1 MB cap, so copying EVERY tool result here would let one long
-      // autonomous turn grow the heap without bound.
+      // Restricted to launch results on purpose. `state.messages` has no entry
+      // cap and a single output can reach the server's 1 MB cap, so copying
+      // EVERY tool result here would let one long autonomous turn grow the
+      // heap without bound. The tool log below is bounded on both axes: 100
+      // entries, each clamped by `clampToolOutput`.
       //
       // Runs BEFORE the tool-log lookup below, which returns early for a slot
       // that has no toolLog yet — a background slot's scrollback still needs
@@ -5508,7 +5556,7 @@ const chatSlice = createSlice({
           if (log[i].type === 'tool' && (!tid || !log[i].tool_call_id)) { target = i; break }
         }
       }
-      if (target >= 0) log[target].output = action.payload.output
+      if (target >= 0) log[target].output = clampToolOutput(action.payload.output)
     },
     /** Store an MCP App (SEP-1865) render payload, keyed by BOTH its session
      *  and tool_call_id (see mcpAppKey): the session scope means an ACP
@@ -5629,13 +5677,6 @@ const chatSlice = createSlice({
         // trace directly above the streamed answer.
         if (state.messages.some(m => m.role === 'thinking' && !m.content)) {
           state.messages = state.messages.filter(m => !(m.role === 'thinking' && !m.content))
-        }
-        // Accumulate reasoning text into activity timeline
-        const last = state.toolLog[state.toolLog.length - 1]
-        if (last?.type === 'reasoning') {
-          last.text += content
-        } else {
-          state.toolLog.push({ type: 'reasoning', text: content, ts: Date.now() })
         }
         let streamIdx = -1
         for (let i = state.messages.length - 1; i >= 0; i--) {
@@ -6503,13 +6544,51 @@ const chatSlice = createSlice({
           && warmSeq < priorSeq
         const serverShrank = typeof priorTotal === 'number' && typeof total === 'number'
           && total < priorTotal && !staleTotal
+        const anchorIds = anchorIdx >= 0 ? rowIdentities(prior[anchorIdx]) : []
+        const warmAnchorIdx = warmed.findIndex(m => rowIdentities(m).some(id => anchorIds.includes(id)))
+        // A `streaming` row is minted client-side by the first chunk and carries
+        // no identity — and stays identity-less when a snapshot idles the slot
+        // and finalizes it to `assistant` (syncSlotRunningFromServer), because
+        // only the server's own assistant frame brings the `mid`. The rescue
+        // keeps identity-less rows as "newer than the page". This one is not
+        // when the page carries the same reply AT LEAST as far as the client
+        // has it: the page's row IS that row, and keeping the copy renders the
+        // reply twice — after a reconnect mid-turn, live chunks would then append
+        // to the stale copy ("0..19 | 0..5 | 20..") until the end-of-turn warm;
+        // after a turn that ended offline, the stale copy would sit under the
+        // final reply for good. "At least as far" is proven, never assumed: a
+        // final `assistant` row (no streaming row left on the page) folds every
+        // chunk of the reply, and a page streaming row supersedes a client
+        // streaming row only when its `seq` is at or past the client's replay
+        // floor (same generation). A client copy the page cannot vouch for — a
+        // chunk raced the fetch, the page carries no `seq`, the page has no reply
+        // row past the anchor yet, or a client-finalized copy meets a page that
+        // still says streaming — is kept: decline, not guess. Kept copies keep
+        // the pre-existing behavior (the end-of-turn warm reconciles them).
+        const pageTail = warmAnchorIdx >= 0 ? warmed.slice(warmAnchorIdx + 1) : warmed
+        const pageStreamSeq = snapshotChunkSeq(warmed)
+        const pageFinalReply = !warmed.some(m => m.role === 'streaming') && pageTail.some(m => m.role === 'assistant')
+        const priorRun = state.slotRun[safeKey(key)]
+        const clientSeq = floorForGen(priorRun?.lastChunkSeq, priorRun?.lastChunkGen, snapshotChunkGen(warmed))
+        const pageStreamCoversClient = pageStreamSeq !== undefined
+          && (clientSeq === undefined || pageStreamSeq >= clientSeq)
+        const supersededByPage = (m: ChatMessage) => rowIdentities(m).length === 0 && (
+          (m.role === 'streaming' && (pageFinalReply || pageStreamCoversClient))
+          || (m.role === 'assistant' && pageFinalReply))
+        // The page's reply row answers the page's LAST turn, so only the copy
+        // that sits before the next turn boundary in the prior tail can be a
+        // copy of it. A user or inject row past the anchor starts a turn the
+        // page predates (a send that landed while the fetch was in flight): that
+        // turn's live streaming row is not on the page at all and is kept
+        // whole, whatever the page says about the earlier reply.
+        const tail = prior.slice(anchorIdx + 1)
+        const nextTurnAt = tail.findIndex(m => m.role === 'user' || m.role === 'inject')
+        const beforeNextTurn = new Set(tail.slice(0, nextTurnAt >= 0 ? nextTurnAt : tail.length))
         const rescuable = anchorIdx >= 0 && !serverShrank
-          ? tailNotInPage(prior.slice(anchorIdx + 1), warmed)
+          ? tailNotInPage(tail, warmed).filter(m => !(beforeNextTurn.has(m) && supersededByPage(m)))
           : []
         // A rewrite REPLACES a reply, so the count holds while the post-anchor rows
         // differ. Equal tail LENGTH is what separates that from a real newer row.
-        const anchorIds = anchorIdx >= 0 ? rowIdentities(prior[anchorIdx]) : []
-        const warmAnchorIdx = warmed.findIndex(m => rowIdentities(m).some(id => anchorIds.includes(id)))
         const sameCountRewrite = rescuable.length > 0 && warmAnchorIdx >= 0 && !staleTotal
           && typeof priorTotal === 'number' && typeof total === 'number' && total === priorTotal
           && prior.length - anchorIdx === warmed.length - warmAnchorIdx

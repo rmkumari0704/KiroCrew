@@ -190,7 +190,7 @@ never as instructions.
 |---|---|---|---|
 | `preflight.py` | 0 | repo/branch/base/auth/dirty/divergence/existing-PR + blockers; fails closed on fetch failure | 0 ready · 30 blocker · 2 env |
 | `resolve_profile.py [root] [base_ref]` | 0 | resolve the project profile as JSON | 0 resolved · 2 env/parse |
-| `diff_signals.py [base] [--check-body]` | 1 / 2 / 3 | changed files + flagged signals (deps, lockfiles, migrations, CI, deletions, config). `--check-body` adds the two body checks (see *Two checks, two strengths*) on the one body file, `<git-dir>/prepare-pr-body.md` | **0 · 20 unaccounted area (`--check-body` only) · 2 env / body file missing** |
+| `diff_signals.py [base] [--check-body]` | 1 / 2 / 3 | changed files + flagged signals (deps, lockfiles, migrations, CI, deletions, config). `--check-body` adds the two body checks (see *Two checks, two strengths*) on the one body file, `<git-dir>/prepare-pr-body.md` | **0 · 20 unaccounted area · 21 `What changed` over `WORD_LIMIT` (both `--check-body` only) · 2 env / body file missing** |
 | `push_guard.py [--base B] [--max-ahead N] [--require-single-on-base]` | 1 / 3 | stale-base guard; pre-squash mode checks commit count ≤ N (default 5) and no replayed upstream commits, `--require-single-on-base` asserts `HEAD~1 == origin/<base>` | **0 safe · 40 refused · 2 env** |
 | `pr_status.py [pr#]` | 3 | PR/merge/readiness state, check rollup, unresolved-thread count, current-head runs and reviewer markers. Pin/require the fleet with `--reviewers` / `PREPARE_PR_REVIEWERS`: stale stamps or `[BLOCK-MERGE]` fail. Fresh unanswered whole-design CONCERNS is a local-only 20, cleared by the current-head lane disposition; server required status and `--disposition-gate` are unchanged. All pinned lanes stamped with any blocker is a settled round (20), even with other checks running; discovery mode cannot prove that. Advisory FINDING counts never gate | **0 clean · 10 running · 20 failing/findings · 2 env** |
 | `pr_findings.py [pr#]` | 3 | failed steps + failing log tails + unresolved threads + reviewer findings on the current head, each with a stable `span=` identity — whole-design items (Blockers / Watch / Subtractions / Suggestions / Not justified as shipped, each with its `Clears when:` line) print FIRST, above the GPT/Opus line-level findings | 0 · 2 env |
@@ -338,7 +338,7 @@ that view; no separate local round log is needed.
 discarded work:
 
 - **Decision gate.** For any user-visible feature, or a whole-PR diff (`origin/<base>...HEAD`, all files) over ~1k lines, get the maintainer's sign-off on the design **and the UI placement** first. The size half is not a refusal: a large change is fine, an *unreviewed* large change is what turns into a twenty-round loop. The rounds view measures growth during review; nothing else looks at size before the PR opens. A placement or architecture change requested post-open re-arms every bot on the whole diff.
-- **File-overlap gate.** `gh pr list --state open --limit 500 --json number,files` for every file your diff touches. **The `--limit` is load-bearing** — the default is 30 rows and this repo carries 175+ open PRs, so the default gate reads as passing while checking a sixth of them. If another open PR deletes or rewrites (>50% line delta) one of your files, STOP and ask which PR hosts the work.
+- **File-overlap gate.** `gh pr list --state open --limit 500 --json number,files` for every file your diff touches. **The `--limit 500` is load-bearing** (why: `references/rationale.md`). If another open PR deletes or rewrites (>50% line delta) one of your files, STOP and ask which PR hosts the work.
 
 Then `python3 $SKILL_DIR/scripts/preflight.py` → **0** proceed; **30** fix the
 printed blocker (on a protected branch → `git switch -c <type>/<slug>`; gh not
@@ -373,7 +373,9 @@ round 0. Read it back with `gh api repos/<owner>/<repo>/issues/<n>/comments
 2. **Sync base.** `git fetch origin` — **this MUST succeed**; if it fails, STOP and report the error. Then `git rebase origin/<base>`. Resolve unambiguous conflicts; ask about ambiguous or large ones.
 3. **Pre-squash guard** (`single_commit` only — see above). `python3 $SKILL_DIR/scripts/push_guard.py --base <base>` — run **now**, before the squash destroys the commit-count signal. **0** → squash; **40** → STOP and diagnose the branch history (likely branched from a stale local trunk; rebase onto fresh `origin/<base>`); **2** → env error.
 4. **Squash to one commit** (`single_commit` only — see above). `git reset --soft origin/<base> && git commit` — keep the subject, detail in the body.
-5. **Reconcile code and description.** Run `python3 $SKILL_DIR/scripts/diff_signals.py` and `git diff origin/<base>...HEAD`. Make the body **complete** (covers every flagged `!` signal), **accurate** (no claim the diff does not support), and shaped to the PR description contract. Write the body to `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — the one file the check reads, inside git's own directory so it is never committed — then run `python3 $SKILL_DIR/scripts/diff_signals.py --check-body`: **20** names a changed area the body never mentions — the body is missing a change or the diff carries one that does not belong; name it or drop it, never pad the prose to hide it. A `WARN` on the `What changed` length is advice, not a stop (see *Two checks, two strengths*). **The body describes the whole diff against `origin/<base>`, as if written for the first time** — never a changelog of this round (see *Snapshot, not changelog*). If the diff itself is wrong, fix and amend now.
+5. **Reconcile code and description.** Run `python3 $SKILL_DIR/scripts/diff_signals.py` and `git diff origin/<base>...HEAD`. **First read *Writing register: Age 5* below** — the body says what changed and why; the diff is the evidence, and the body never restates it. Make the body **complete** (covers every flagged `!` signal), **accurate** (no claim the diff does not support), and shaped to the PR description contract. Write the body to `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — the one file the check reads, inside git's own directory so it is never committed — then run `python3 $SKILL_DIR/scripts/diff_signals.py --check-body`: **20** names a changed area the body never mentions — the body is missing a change or the diff carries one that does not belong; name it or drop it, never pad the prose to hide it. **21** means `What changed` is over `WORD_LIMIT` words — cut the recital, not the facts. **The body describes the whole diff against `origin/<base>`, as if written for the first time** — never a changelog of this round (see *Snapshot, not changelog*). If the diff itself is wrong, fix and amend now.
+
+   **Cold reader.** Once `--check-body` exits 0, hand ONLY the `What changed` text to one tool-less subagent (`spawn_run`, agent `kirocrew-lite`) and ask: *"In two sentences, what does this PR change for a user, and why?"* No answer, or one that leads with a mechanism the section does not, means rewrite and re-check. One round, nothing recorded. It is the only step that measures readability.
 
 ### Phase 2 — Local review is THE GATE (inner loop, cap 10)
 
@@ -646,7 +648,7 @@ absent. Phase 1.5 checks them against the diff.
 
 1. **Problem / Motivation** — the concrete symptom, or the gap for a feature.
 2. **Why it matters** — impact if left unfixed.
-3. **What changed (motivation → approach → change)** — symptom → root cause → the specific change, so the reader sees *why this is the right fix*. Three short paragraphs at most — one per arrow, about 300 words of prose; `--check-body` WARNs past that (`SOFT_WORDS`). It describes the **whole diff on this head**, never one round's fix. Write it in the register below.
+3. **What changed (motivation → approach → change)** — symptom → root cause → the specific change, so the reader sees *why this is the right fix*. Three short paragraphs at most — one per arrow, well under 500 words of prose; `--check-body` stops past that (exit 21, `WORD_LIMIT`). It describes the **whole diff on this head**, never one round's fix. Write it in the register below.
 4. **Tests** — what was added/updated and what each locks in.
 5. **Manual verification** — steps done/needed, or "N/A — unit coverage sufficient" with a one-line why.
 6. **Screenshots / video — MANDATORY for any user-visible UI change**, uploaded as GitHub attachments with `gh ... --attach`, never committed. See below.
@@ -656,18 +658,16 @@ Omit a section only when truly not applicable, and say so.
 
 ### Two checks, two strengths
 
-`diff_signals.py --check-body` applies two rules of different weight to the
-finished body:
+`diff_signals.py --check-body` applies two rules to the finished body. Both
+stop the loop; they pull in opposite directions on purpose (why: `references/rationale.md`):
 
 | check | what it measures | on breach | why that strength |
 |---|---|---|---|
-| Accounting | every changed area (the `pr-scope.yml` unit: a module directory under `src/kiro_crew/` or `website/src/`, the top-level component elsewhere) is named in the body — by the area, a changed path or its `dir/file` tail, or a unique non-generic file name | **exit 20** — stop, fix the body or the diff | a change nobody is told about is how an unrelated edit rides along |
-| Length | words of prose in `What changed` (fenced blocks, table rows, image lines excluded) against the 300 of section 3's paragraph rule | **WARN**, exit 0 | a rename or a shared-helper migration needs the words; a hard cap cuts true facts |
+| Accounting | every changed area (the `pr-scope.yml` unit: a module directory under `src/kiro_crew/` or `website/src/`, the top-level component elsewhere) is named in the body — by the area, a changed path or its `dir/file` tail, or a unique non-generic file name | **exit 20** — stop, fix the body or the diff | an unnamed change is how a stray edit rides along |
+| Length | words of prose in `What changed` (fenced blocks, table rows, image lines excluded) against the 500 of section 3's paragraph rule | **exit 21** — stop, compress the prose | with the ledger complete, a cap cuts only restated facts; the diff is the evidence |
 
-The accounting is the leak detector, not the prose: a long walkthrough hides a
-stray file better than a short body does, because the reviewer trusts it and
-skips the diff. Short prose, complete ledger — paths, tables and pictures never
-count against the soft limit.
+Paths, tables and pictures never count against the limit. When both breach,
+20 is reported and both findings print.
 
 ### Snapshot, not changelog
 
@@ -686,6 +686,10 @@ depth or the reader; the facts stay complete and technically exact.
   only the facts needed to support it. One idea per sentence, no chained clauses.
 - **Do not recite the diff.** No per-file walkthrough, nested bullets or numbered
   findings within a section; evidence and history belong in the review thread.
+  One general sentence may cover a whole area ("docs updated to name the
+  nightly").
+- **Lead with a table when the change has more than one moving part** — the
+  punch line and the key mechanisms at the top of `What changed`; prose explains why.
 - Keep identifiers, paths, errors and flags verbatim. Cut decorative jargon.
   Name the thing and what it does, not the abstraction around it.
 - Add a picture only when it explains a changed shape faster than prose.
@@ -707,14 +711,10 @@ fair — flowchart, sequence, state, class, ER, timeline, or whatever fits the d
 and when the delta is a **matrix** (which inputs pass or fail, how each platform
 behaves), a markdown table is the picture: rows are the concrete cases, columns are
 Before and After, each cell is one coloured verdict. Do not force a matrix into
-boxes and arrows. The constraints below are the ones that make every PR read the
-same way at a glance; everything else is your call.
+boxes and arrows. The constraints below make every PR read the same way at a glance.
 
-- **Text, in the body.** A Mermaid fence or a markdown table renders in the PR body
-  directly. Nothing to capture, nothing to upload, and a reviewer can fix a label
-  in the text. A real rendered screen or a pixel before/after is not a picture of
-  the delta — that is a screenshot; see *Screenshots* below, which owns the capture
-  and upload rules.
+- **Text, in the body.** A Mermaid fence or a markdown table, never an image — a
+  rendered screen is a screenshot; see *Screenshots* below.
 - **Before → After, and only the delta.** Two states side by side (two subgraphs,
   or two columns), or one graph where the changed edge is the only thing that
   stands out. Six to ten nodes, or eight rows, is the ceiling.
@@ -744,9 +744,8 @@ Capture each affected surface in its meaningful variants (desktop vs browser, em
 vs populated), **by looking at the change yourself** via the `web-verify` skill — the
 PR's evidence is then the same evidence you used to verify.
 
-Evidence is **uploaded as a GitHub attachment, never committed.** `temp-screenshots/`
-and `.github/screenshots/` are gitignored, and `docs/` and `src/kiro_crew/**` ship in
-the wheel and the desktop DMG — no path in the repository is a place for review media.
+Evidence is **uploaded as a GitHub attachment, never committed** — no path in the
+repository is a place for review media (why: `references/rationale.md`).
 
 - **Capture into a local scratch dir** — `$KIROCREW_SCRATCH/evidence/`, or the gitignored `temp-screenshots/<feature>/` the capture scripts already write to. Neither reaches the commit.
 - **Write ordinary local paths in the body file**, relative to the directory you run `gh` from: `![Settings page, empty state](./evidence/after.png)`. A video MUST stand alone in its own paragraph — `![](./evidence/demo.mp4)` with a blank line above and below — to render as an inline player; inside a sentence it renders as a link.
@@ -813,15 +812,9 @@ first; preserve any existing automation and the user's stop. Neither driver
 grants publication permission.
 
 **Never hand the fix-and-push loop to a cron job or a HEARTBEAT.md task.** Neither
-can push a revision, and both report success while doing nothing: a cron has no
-owning slot, so its tool calls hit a deny-by-default approval path and time out,
-while a denied tool inside a completed turn still records `last_status: ok`;
-heartbeat runs under a name allowlist with no shell and no `git push`.
-
-`monitor_watch` is the zero-turn choice for a provider-fact-only watch, but this
-fix-and-push loop depends on generic reviewer posts and must stay on the bounded
-`monitor_start` path. Do not register the compatibility `pr_watch` script cron for
-new work.
+can push a revision, and both report success while doing nothing (why:
+`references/rationale.md`). `monitor_watch` and the compatibility `pr_watch` cron
+see provider facts only, never reviewer posts, so this loop stays on `monitor_start`.
 
 Cron *is* correct for post-merge cleanup, as a `script` cron at roughly a 5-minute
 interval — an hourly one loses the merge-to-teardown race.

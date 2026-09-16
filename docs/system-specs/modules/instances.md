@@ -306,7 +306,7 @@ cannot drift.
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `instances.enabled` | `false` | Primary opt-in, read at gateway startup. Also gates the CSP `frame-src` `*.localhost` extension. |
-| `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks how many crews are registered, so up to an internal ceiling no configured crew is evicted; an explicit value is honoured exactly, including one below the registered count. Negative values fall back to automatic. |
+| `instances.warm_set_cap` | `0` (automatic) | Max instances kept warm at once (bounds memory/sockets; each warm instance is a full dashboard SPA). `0` tracks how many crews are registered, so up to the internal ceiling no configured crew is evicted; an explicit value is honoured exactly, including one below the registered count. Negative values fall back to automatic. |
 | `instances.tunnel_base_port` | `7778` | First local loopback port the allocator hands out. Out-of-range values fall back to the default. |
 | `instances.ssh_compression` | `true` | Add `-C` to the tunnel argv. See §5.2. |
 | `instances.connect_timeout_secs` | unset (SSH `15.0`, SSM `25.0`) | How long (secs) to wait for the local forward port to accept connections before declaring a connect attempt failed. Hosts behind a ProxyCommand or jump host need longer (the proxy handshake runs before ssh begins the forward). An explicit value applies to both transports, including a value equal to either transport's default. Values below 1 fall back to the transport defaults; values above 120 are clamped to 120. |
@@ -629,6 +629,54 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
    row. **Edit settings** / **Remove** live in the row's overflow menu — a row
    shows two primary actions plus that menu, so everything past them is one
    menu deep.
+
+Every configured row carries separate source and transport badges from the
+instance record. `connection_method="ssm"` shows **SSM**; every other transport
+shows **SSH**. A record whose persisted `provisioner_id` is `aws_ec2` also shows
+**EC2**, independently of launch-job history. `provisioner_id` is stamped by
+`register_instance` on each EC2 registration and relaunch; a record created
+before the field existed carries `""` until its next relaunch, and until then
+the launch-job correlation supplies the EC2 badge and posture. A hand-added
+record with no known provisioner shows only its transport rather than being
+guessed into an EC2 category.
+
+One residual for operators: an EC2 row registered before `provisioner_id`
+existed whose launch job has since been garbage-collected shows only its
+transport badge, and Remove on it is NOT confirm-gated — Remove could stop a
+billing machine without a warning — until a relaunch stamps it. Relaunch the
+crew to get the guard now, or check the AWS console before removing. A one-time
+heuristic backfill was judged and rejected: stamping rows whose `ssm_target`
+sits in a known launcher region would mis-stamp hand-added SSM crews in that
+region, and a wrong `aws_ec2` stamp produces a false billing warning and a
+false "delete it in the AWS console" remedy on a machine the launcher never
+created. `provisioner_id` is data the launcher records at registration, not a
+guess inferred later.
+
+Renaming a crew is done from **Edit settings**: its Name field writes through
+the same `PATCH /api/instances/{id}` as every other field, and the registry
+persists the new name. A successful save invalidates the shared instances
+query, updating the list and pane labels; an API rejection stays beside the
+open draft instead of closing the form. The held draft is keyed only by crew,
+so an in-app route remount reopens that crew's full form, and choosing Edit
+settings again on the same row reuses the draft. Switching to another row while
+a draft exists is refused until Save or Cancel, so unsaved work is never
+cleared by changing rows.
+
+A save is bound to the form that started it. While its request is in flight, that
+form freezes its fields, Save, and Rebase. The exit button reads "Stop waiting"
+while pending and stays enabled. It aborts the request client-side, refreshes
+the instances list, and returns the form to editable with its typed draft kept.
+The client cannot tell whether that save landed; the refreshed list shows the
+current state. An inline status names that outcome and offers
+Save again or Cancel. The refresh shows a save the gateway already applied;
+stopping the wait does not undo it. When no save is pending, the button reads
+"Cancel". Navigating away also aborts the request; the held draft is restored on
+remount, enabled for another save. The server may still apply a request despite
+the client cancellation, even after that one refresh;
+the shared `['instances']` cache is re-read every 60 seconds by the instances
+viewport and on window focus, so the list shows the server's record within a
+minute. If the record changed meanwhile, the shared Rebase path reconciles the
+restored draft with the record that exists now.
 
 An unsaved edit is held by the PANEL, keyed by crew, not by the form component.
 The crew list unmounts for any number of reasons the form cannot see — switching

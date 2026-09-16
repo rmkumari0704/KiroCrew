@@ -10,7 +10,7 @@ export const SOUND_PRESETS = ['chime', 'ding', 'blip', 'pop', 'pulse'] as const
 export type SoundPreset = typeof SOUND_PRESETS[number] | 'none'
 
 /** Category mirrors Notification.kind values used by NotificationsPage, plus
- * the frontend-synthesized 'turn' kind (agent finished a turn — see
+ * the frontend-synthesized 'turn' kind (conversation ready for the user — see
  * TURN_DONE_KIND in notificationEvent.ts; sound-only, never in the feed). */
 export const SOUND_CATEGORIES = ['all', 'turn', 'agent', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner', 'skills'] as const
 export type SoundCategory = typeof SOUND_CATEGORIES[number]

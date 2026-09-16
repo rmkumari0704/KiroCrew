@@ -20,7 +20,7 @@ from urllib.parse import quote
 from aiohttp import web
 
 from kiro_crew import platform_compat, port_resolution
-from kiro_crew.apps.backend import start_enabled_app_backends
+from kiro_crew.apps.backend import start_deferred_app_backends, start_enabled_app_backends
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler
 from kiro_crew.apps.hooks_integration import (
     init_hooks_system,
@@ -3165,8 +3165,31 @@ def _register_instances_hooks(app: web.Application, state: DashboardState, port:
         if manager is not None:
             await manager.shutdown()
 
+    async def _session_ledger_drain(app_: web.Application) -> None:
+        """Write out the session ledger's buffered appends before the process goes.
+
+        The emitter hands appends to a writer thread so a turn never waits on the
+        filesystem, which means a record can be in memory when shutdown starts.
+        Exiting without this drops exactly the entries a reader most wants after a
+        restart -- the last thing each session did. The drain is bounded inside
+        the emitter, and runs in a thread so a slow disk delays the exit instead
+        of blocking the loop that is closing everything else down.
+        """
+        try:
+            # Imported here, not at module scope: this file is on the gateway boot
+            # path, and the emitter is flag-gated behind KIROCREW_SESSION_LEDGER.
+            # AUTOSDE's no-new-work-on-gateway-boot-path rule asks for the IMPORT to
+            # be gated, not just the handler, so a launch with the flag unset pays
+            # nothing for a subsystem it will never call.
+            from kiro_crew import session_ledger_emit
+
+            await asyncio.to_thread(session_ledger_emit.drain_for_shutdown)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            logger.debug("session ledger drain failed during shutdown", exc_info=True)
+
     app.on_startup.append(_instances_startup)
     app.on_cleanup.append(_instances_shutdown)
+    app.on_cleanup.append(_session_ledger_drain)
 
 
 def build_host_canonical_redirect(canonical_host: str) -> Any:
@@ -4086,6 +4109,10 @@ async def start_dashboard(
     # wedge-prone blocking work that would freeze this event loop if run inline.
     # subprocess_executor (not the default to_thread pool) isolates it so a hung
     # `ps` cannot starve asyncio's default executor (the RFC's bulkhead intent).
+    # This wave runs BEFORE ``runner.setup()`` so an app's startup hooks find its
+    # backend running. The one exception is deferred: a backend that is handed the
+    # gateway's actually-bound port at spawn (``KIROCREW_BOUND_PORT``) is started
+    # after ``_export_bound_port`` below, because that value does not exist yet.
     await cautious_boot.pause_before("app backends")
     started_apps = await asyncio.get_running_loop().run_in_executor(
         subprocess_executor(), start_enabled_app_backends
@@ -4512,6 +4539,19 @@ async def start_dashboard(
     # Export the port this gateway ACTUALLY bound so child processes resolve
     # loopback callbacks against the truth, not a re-derived config guess.
     _export_bound_port(runner, port)
+
+    # The backend the main wave deferred (``apps.backend.DEV_FLEET_APP_NAME``):
+    # ``apps/backend.py`` hands the Dev Fleet backend ``KIROCREW_BOUND_PORT`` at
+    # spawn, and that value exists only once the site is bound — a backend spawned
+    # before the export reads pointer state through no port at all until something
+    # restarts it. Same bulkhead as the main wave; admission already ran there.
+    deferred_apps = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), start_deferred_app_backends
+    )
+    if deferred_apps:
+        logger.info(
+            "Started %d bound-port app backend(s): %s", len(deferred_apps), ", ".join(deferred_apps)
+        )
     # Additional kernel-verifiable transport for the internal API (POSIX only;
     # degrades to TCP-only on any failure — see _start_unix_site).
     _unix_socket_holder["path"] = await _start_unix_site(runner, port)

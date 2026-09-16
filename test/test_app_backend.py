@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,6 +25,52 @@ from kiro_crew.apps.backend import (
     stop_app_backend,
 )
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
+
+
+def _own_probe_sel(probe_home: str):
+    """Give ``_sandbox_can_spawn`` a synchronous SEL bound under *probe_home*, or None.
+
+    Returns the instance the probe now owns, or ``None`` when the process already
+    held a singleton -- one the operator's code constructed (a ``base_dir``
+    instance from a sibling module, say) is not the probe's to replace or retire,
+    and ``wrap_argv()`` will simply append to it. If construction fails, the
+    probe clears the partially published singleton before propagating the error.
+
+    ``sync=True`` is the whole point: the probe's denial audit is then written
+    INLINE on this thread and NO writer thread is ever started, so nothing can
+    outlive the ``with TemporaryDirectory()`` holding a reference to the
+    directory it is about to remove. The earlier shape retired an async instance
+    after the fact with ``flush()`` + shutdown sentinel + ``join(timeout=5)``,
+    and a join that times out leaves a daemon thread whose next ``_flush_batch``
+    re-creates the deleted home -- the leak this exists to close, one race away.
+    """
+    from kiro_crew.sel import SecurityEventLog
+
+    if SecurityEventLog._instance is not None:
+        return None
+    try:
+        return SecurityEventLog(Path(probe_home), sync=True)
+    except BaseException:
+        # ``__new__`` publishes the singleton before ``_init_locked`` finishes,
+        # so failed initialization can leave this probe's half-built instance.
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        raise
+
+
+def _retire_probe_sel(owned) -> None:
+    """Clear the class slots for the instance ``_own_probe_sel`` returned.
+
+    Nothing to flush or join: a ``sync=True`` instance has no queue and no
+    thread. Clearing the slots lets the first test's ``sel()`` rebuild under
+    the session floor's redirected default dir (``_isolate_sel_default_dir``).
+    """
+    from kiro_crew.sel import SecurityEventLog
+
+    if owned is None or SecurityEventLog._instance is not owned:
+        return
+    SecurityEventLog._instance = None
+    SecurityEventLog._initialized = False
 
 
 def _sandbox_can_spawn() -> bool:
@@ -49,6 +96,21 @@ def _sandbox_can_spawn() -> bool:
     backend at all, and every test it gates then failed closed under the
     fixture's default config, while CI (no operator config) skipped them. The
     gate must observe what the tests will observe: the default config.
+
+    The probe also OWNS the Security Event Log ``wrap_argv()`` writes to. On a
+    host with no sandbox backend the call fail-closes and records a ``denied``
+    audit through ``sel()`` -- a process SINGLETON whose ``_dir`` is bound once,
+    here from ``empty_home``. Left to construct itself that instance would be
+    ASYNC, and (a) its writer thread keeps the chain lock / log open long enough
+    on Windows that ``TemporaryDirectory`` cannot remove ``empty_home`` -- the
+    failure lands in the bare ``except`` below and the directory leaks at the
+    TEMP root, one per xdist worker, holding a ``security_events.jsonl`` and a
+    ``trust/sel_hmac.key`` -- and (b) it outlives the probe: the rootdir
+    ``_isolate_sel_default_dir`` floor only resets the singleton at the first
+    test's setup, and any write on the lingering thread ``mkdir``s the deleted
+    home back into existence. MEASURED: five full runs each left ten such
+    directories. So the probe constructs the singleton itself, ``sync=True``
+    (inline writes, no thread), and clears it before the directory goes.
     """
     try:
         from kiro_crew import sandbox as _sb
@@ -56,13 +118,16 @@ def _sandbox_can_spawn() -> bool:
         with tempfile.TemporaryDirectory() as empty_home:
             saved = os.environ.get("KIROCREW_HOME")
             os.environ["KIROCREW_HOME"] = empty_home
+            owned = None
             try:
+                owned = _own_probe_sel(empty_home)
                 argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
             finally:
                 if saved is None:
                     os.environ.pop("KIROCREW_HOME", None)
                 else:
                     os.environ["KIROCREW_HOME"] = saved
+                _retire_probe_sel(owned)
     except Exception:  # noqa: BLE001 — any probe failure => treat as "can't spawn"
         return False
     try:
@@ -1388,9 +1453,85 @@ class TestBootAdmissionRevet:
             "manifest": {"backend": {"entryPoint": "server.py"}},
         }]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        monkeypatch.setattr(
+            bmod,
+            "_read_installed",
+            lambda _name: SimpleNamespace(origin="builtin"),
+        )
         bmod.start_enabled_app_backends()
         # Builtin is exempt from the gate — start_app_backend was invoked for it.
         assert "core-builtin" in started
+
+    def test_deferred_backends_are_admitted_now_and_spawned_later(self, tmp_path, app_env, monkeypatch):
+        """``defer`` holds a name back from the main spawn wave without skipping its
+        vetting; ``start_deferred_app_backends`` then spawns exactly that set, once.
+        Dev Fleet is deferred so it is handed the gateway's actually-bound port."""
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [
+            {"name": "dev-fleet", "enabled": True, "origin": "builtin",
+             "manifest": {"backend": {"entryPoint": "server.py"}}},
+            {"name": "md-notebook", "enabled": True, "origin": "builtin",
+             "manifest": {"backend": {"entryPoint": "server.py"}}},
+        ]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        assert started == ["md-notebook"]
+        bmod.start_deferred_app_backends()
+        assert started == ["md-notebook", "dev-fleet"]
+        # A second call spawns nothing: the deferred set was consumed.
+        bmod.start_deferred_app_backends()
+        assert started == ["md-notebook", "dev-fleet"]
+
+    def test_a_deferred_app_that_is_disabled_is_not_spawned_later(self, tmp_path, app_env, monkeypatch):
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [{"name": "dev-fleet", "enabled": False, "origin": "builtin",
+                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        bmod.start_deferred_app_backends()
+        assert started == []
+
+    def test_a_deferred_app_disabled_between_the_waves_is_not_spawned(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """The deferral leaves a window (the rest of start_dashboard) in which the
+        operator can run `kirocrew app disable dev-fleet`. The cached admission
+        must not outlive that: enablement is re-read at spawn time, and an
+        unreadable state (None) is treated as not enabled."""
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [{"name": "dev-fleet", "enabled": True, "origin": "builtin",
+                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        assert started == []
+        # Operator disables the app while the gateway is still booting.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+        bmod.start_deferred_app_backends()
+        assert started == []
+        # And an unreadable state is not a licence to spawn either.
+        bmod.start_enabled_app_backends()
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: None)
+        bmod.start_deferred_app_backends()
+        assert started == []
+
+    def test_a_deferred_app_denied_by_governance_between_the_waves_is_not_spawned(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import kiro_crew.apps.manager as manager
+
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [{"name": "dev-fleet", "enabled": True, "origin": "builtin",
+                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        monkeypatch.setattr(manager, "_app_activation_denied", lambda name: "policy tightened")
+        bmod.start_deferred_app_backends()
+        assert started == []
+
+    def test_dev_fleet_is_the_bound_port_deferred_backend(self):
+        import kiro_crew.apps.backend as bmod
+
+        assert bmod.DEV_FLEET_APP_NAME == "dev-fleet"
 
     def test_spawn_exception_isolated_and_boot_continues(self, tmp_path, app_env, monkeypatch):
         """A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing on macOS 26

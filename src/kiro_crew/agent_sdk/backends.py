@@ -75,6 +75,9 @@ with no row here.
      - pre-session registry query (membership gate on the ``acp_backend`` kwarg)
    * - ``ACP_BACKENDS_SESSION_MCP_ARRAY``
      - driver-internal (which channel carries the MCP server list)
+   * - ``ACP_BACKENDS_META_IDENTITY``
+     - driver-internal (which harnesses publish a ``_meta`` tool identity, and so
+       accept being refused when a frame classifies as nothing)
    * - ``ACP_BACKENDS_SESSION_SHARING``
      - pre-session registry query (subagent session allocation)
    * - ``ACP_BACKENDS_MEMBER_CAPABILITIES``
@@ -177,6 +180,39 @@ ACP_BACKEND_OPENCODE = "opencode"
 # permission gate of its own, so Crew loads one INTO it -- see
 # :data:`Routing.VERIFIED_GATE_EXTENSION`.
 ACP_BACKEND_PI = "pi"
+# goose: a single binary that serves ACP itself (``goose acp``). No npm adapter and
+# no Node floor, so its install probe names ONE component -- the shape opencode has
+# and the opposite of pi's two. What distinguishes it is where its permission route
+# comes from: goose resolves ``GOOSE_MODE`` out of its own ENVIRONMENT and above its
+# config file, so the mode is settled in the ``session/new`` result rather than
+# applied to a session that already exists -- see
+# :data:`Routing.VERIFIED_SEEDED_SETTINGS`.
+#
+# VERIFIED RANGE: goose 1.50.x (1.50.1 is the recorded binary). Three things Crew holds
+# this harness to are wire FACTS of that release rather than spec guarantees, and they do
+# not all fail the same way, so each is named with its direction:
+#
+# * ``modes.currentModeId`` on every ``session/new`` and ``session/load`` -- fails CLOSED:
+#   a session with no readable mode is refused.
+# * the tool identity in ``_meta.goose.toolCall`` on every ``tool_call`` frame -- fails
+#   CLOSED: an unclassifiable approval is refused, on every session and on both sites
+#   that answer a permission request, whether or not the session carries a deny set.
+# * a ``current_mode_update`` on the session's own connection whenever the mode MOVES --
+#   fails OPEN: the mid-session tripwire fires on that frame, so a release that stops
+#   emitting it leaves a session that left the required mode running unrefused until
+#   the next restore. This is the one fact of the three whose loss is not self-announcing.
+#
+# So a release that moves either of the first two turns into refused sessions or refused
+# approvals; a release that drops the third silently narrows the tripwire back to the
+# open/restore read-back. The corpus pins all three
+# (``test/fixtures/acp_frames/goose/``; the mode-move emission is pinned by the tripwire
+# test reading a live ``current_mode_update`` naming ``auto`` off
+# ``session-load-live.jsonl``). Re-verify all three against a fresh capture before raising
+# this range, and re-capture the mode move deliberately -- it is the one a routine
+# re-record would not exercise. A session on a release outside the range is named at the
+# handshake (``AcpClient._note_goose_version`` reads ``agentInfo.version`` off
+# ``initialize``), so the one silent loss has a signal before the first prompt.
+ACP_BACKEND_GOOSE = "goose"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -192,6 +228,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_GOOSE,
     }
 )
 
@@ -244,8 +281,57 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
 # Membership here would make the dashboard report Crew tools as mounted on a
 # session where none can be called, which is the one state an absent tool never
 # produces. See ``providers/mirrors/registry.py`` for the projection that says so.
+# goose is the fourth member and it joins on a ROUND TRIP rather than on an accepted
+# element, which is the distinction pi's exclusion exists to draw. Driven against
+# goose 1.50.1: one element shaped as ``acp.session_mcp.acp_server_element`` emits is
+# placed on ``session/new``, and goose asks the named stdio child ``initialize``,
+# ``notifications/initialized``, ``tools/list`` and ``tools/call``, with the tool's
+# own result arriving back on ``tool_call_update``. Its ``initialize`` advertises
+# ``mcpCapabilities: {"http": true, "sse": false}`` and no stdio flag, which is the
+# same absence-of-an-impossible-field non-evidence recorded for opencode above.
+# goose surfaces such a tool as ``<serverName>__<toolName>`` -- a double underscore
+# and no ``mcp__`` prefix -- and carries ``toolName`` and ``extensionName``
+# separately in ``_meta.goose.toolCall``.
+#
+# One hazard rides along, and it is the INVERSE of a session that fails whole: an
+# element whose command cannot start does not fail ``session/new`` on goose. The
+# session is created normally with that element dropped, so an unstartable pooled
+# broker stub costs no session here but leaves a healthy-looking one carrying none of
+# Crew's tools.
+# Harnesses opted into the fail-closed approval posture: a ``tool_call`` frame carrying
+# NEITHER an ACP ``kind`` nor the harness's own ``_meta`` identity channel classifies as
+# nothing, and on an auto-approve path with a deny set configured its approval is refused
+# rather than answered blind.
+#
+# Membership is the SCOPE of that refusal, and the scope is the point. What proves a
+# harness classifies EVERY tool class is a recording of every tool class -- and a corpus
+# of a few frames shows a channel exists, never that no class omits it. So membership is
+# held to a measurement, per backend: the coverage pin in ``test_acp_goose_backend.py``
+# asserts every committed ``tool_call`` frame in the member's corpus is classifiable, and
+# the member's corpus has to have been recorded broadly enough for that to mean anything.
+#
+# goose is in because its corpus is the case that NEEDS the refusal -- its builtin shell
+# frames carry no ``kind`` at all, captured live -- and every recorded frame carries its
+# channel. kiro-cli is deliberately absent, for the same reason ``kas`` is: both publish
+# ``_meta.kiro``, but the recorded kiro corpus holds two tool_call frames of two classes,
+# which is not a measurement of every class, and no kiro defect (an approval answered
+# blind) has been observed that the refusal would close. Neither loses anything by being
+# out: a harness outside the set keeps its behaviour exactly. Adding one is one entry here
+# plus one on its channel row, and the pin then checks it against its own recordings --
+# which for kiro means first recording a frame per builtin tool class.
+#
+# The channel TABLE lives in ``kiro_crew.acp._dispatch`` (it holds wire field names, which
+# are driver detail); this set is the vocabulary half, and a test asserts the two agree so
+# a row and its membership cannot drift apart.
+ACP_BACKENDS_META_IDENTITY: FrozenSet[str] = frozenset({ACP_BACKEND_GOOSE})
+
 ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_GOOSE,
+    }
 )
 
 # Private member tools must execute inside the owned sandbox. A backend joins
@@ -318,6 +404,21 @@ ACP_BACKENDS_PRIVATE_MEMORY_MCP: FrozenSet[str] = frozenset(
 #:   precondition is VERIFIED before the first prompt by asking the harness's own
 #:   command registry whether the extension loaded from the shipped file. See
 #:   :data:`Routing.VERIFIED_GATE_EXTENSION`.
+#:
+#: ``ACP_BACKEND_GOOSE`` is included on the same two conditions, met by the FIRST
+#: mechanism, and it is the only member whose routing needs nothing applied after
+#: the session exists:
+#:
+#: * ``backend_install`` probes for the ``goose`` binary, one component, because the
+#:   harness's own release ships the executable that serves ACP.
+#: * its tool calls are ROUTED and the routing is VERIFIED. goose asks per tool call
+#:   only in its ``approve`` mode and its own default is ``auto``, which
+#:   auto-approves; the client supplies ``GOOSE_MODE=approve`` in the child's
+#:   environment, which goose resolves ABOVE its own config file, and then reads the
+#:   mode goose reports back in ``modes.currentModeId`` on the very response that
+#:   creates or restores the session. The read-back is on the SAME connection as the
+#:   session -- no second child, and no window in which the session is live and the
+#:   mode is unconfirmed. See :data:`Routing.VERIFIED_SEEDED_SETTINGS`.
 BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -326,6 +427,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_GOOSE,
     }
 )
 
@@ -349,6 +451,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_CODEX: ACP_BACKEND_CODEX,
     ACP_BACKEND_OPENCODE: ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI: ACP_BACKEND_PI,
+    ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
 }
 
 #: The backend a deployment policy may never deny.
@@ -831,7 +934,13 @@ def acp_runtime_backends() -> FrozenSet[str]:
 # ``provider/model`` id pi resolved from its own ``models.json``
 # (``test/fixtures/acp_frames/pi/session-live.jsonl``).
 ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_GOOSE,
+    }
 )
 
 # Backends that take a reasoning-effort change through
@@ -930,7 +1039,13 @@ def effort_config_option_id(backend: str) -> str:
 # ``models.json`` (``ollama/llama3.2:3b`` for a local model), which no static
 # registry names.
 ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_GOOSE,
+    }
 )
 
 # Backends that seed a per-session settings file — claude-agent-acp's
@@ -983,6 +1098,11 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     ACP_BACKEND_OPENCODE: "opencode",
     # pi likewise: ``provider/model`` pairs from the operator's own models.json.
     ACP_BACKEND_PI: "pi",
+    # goose likewise, and it is the sharpest case: its ``session/new`` advertises the
+    # whole provider catalog it could reach, so sharing the ``acp`` bucket would not
+    # merely mix two harnesses' ids -- it would replace kiro-cli's advertised catalog
+    # with a list of every provider goose knows about.
+    ACP_BACKEND_GOOSE: "goose",
 }
 
 
@@ -1113,7 +1233,13 @@ ACP_BACKENDS_HOST_AUTH_CALLBACK = frozenset({ACP_BACKEND_KAS})
 # ``user_message_chunk`` / ``agent_message_chunk`` updates before answering
 # (``test/fixtures/acp_frames/pi/session-load-live.jsonl``).
 ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
-    {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+        ACP_BACKEND_GOOSE,
+    }
 )
 
 # Backends whose SUCCESSFUL ``session/load`` result carries no ``modes`` block.
@@ -1225,6 +1351,7 @@ ACP_BACKEND_ROUTING: dict = {
     ACP_BACKEND_CODEX: Routing.SESSION_CONFIG,
     ACP_BACKEND_OPENCODE: Routing.VERIFIED_SEEDED_SETTINGS,
     ACP_BACKEND_PI: Routing.VERIFIED_GATE_EXTENSION,
+    ACP_BACKEND_GOOSE: Routing.VERIFIED_SEEDED_SETTINGS,
 }
 
 
@@ -1254,8 +1381,15 @@ ACP_BACKEND_PERMISSION_CONFIG: dict = {
 #: the PreToolUse gate would run for nothing -- which is why the required value is
 #: data here rather than a literal at the seeding site: the same pair names what is
 #: supplied, what is read back, and what the refusal reports.
+# goose asks per tool call only in its ``approve`` mode, and its own default is
+# ``auto``, which auto-approves -- so the same reasoning puts the required value here
+# as data. The KEY is an environment variable rather than a config field because that
+# is where goose resolves this setting from, and it resolves it ABOVE its own config
+# file: an operator's ``GOOSE_MODE: auto`` cannot defeat the seed, and the resulting
+# mode is reported in the ``session/new`` result itself.
 ACP_BACKEND_PERMISSION_SETTING: dict = {
     ACP_BACKEND_OPENCODE: ("permission", "ask"),
+    ACP_BACKEND_GOOSE: ("GOOSE_MODE", "approve"),
 }
 
 

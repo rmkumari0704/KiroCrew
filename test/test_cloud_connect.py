@@ -358,9 +358,7 @@ class TestKillProcessTree:
         assert str(FakeProc.pid) in argv
         assert not FakeProc.terminated, "parent-only terminate must not be the Windows path"
 
-    def test_windows_tree_kill_tolerates_a_process_object_without_a_pid(
-        self, monkeypatch
-    ) -> None:
+    def test_windows_tree_kill_tolerates_a_process_object_without_a_pid(self, monkeypatch) -> None:
         """A Popen-LIKE stand-in must not raise on the Windows branch.
 
         `kill_port_forward` accepts any object with poll/terminate/wait -- the
@@ -433,6 +431,7 @@ class TestRegistryIntegration:
         assert inst.aws_profile == "dev"
         assert inst.aws_region == "us-west-2"
         assert inst.ssh_host == ""
+        assert inst.provisioner_id == "aws_ec2"
 
     def test_register_instance_is_idempotent_on_relaunch(self, monkeypatch, tmp_path):
         from kiro_crew.instances.registry import InstancesRegistry
@@ -457,6 +456,7 @@ class TestRegistryIntegration:
         assert rec.ttl == "30m"
         assert rec.local_port == 5599
         assert rec.was_connected is True
+        assert rec.provisioner_id == "aws_ec2"
 
     def test_unregister_instance_empty_arg_is_noop(self, monkeypatch, tmp_path):
         from kiro_crew.instances.registry import InstancesRegistry

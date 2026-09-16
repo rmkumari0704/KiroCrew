@@ -571,6 +571,8 @@
       "global": {
         "unattributed_label": "リポジトリのないイベント",
         "unattributed_note": "イベントがリポジトリを記録するようになる前に書かれたため、どのリポジトリにも帰属できません。以下の各ステップの数にも含まれていません。",
+        "no_step_activity_label": "これらのステップに属さないイベント",
+        "no_step_activity_note": "このパイプラインにはイベントが記録されています — イベント数は他のリポジトリを含む記録済みのすべてを数えます — が、どれもこのビューのステップには属さないため、各列と最終アクティビティはゼロと表示されます。",
         "repos_label": "リポジトリ",
         "repos_note": "記録には他のリポジトリのイベントも含まれます。このボードは上で選択したリポジトリのみを表示します。",
         "title": "パイプライン",
@@ -5552,7 +5554,9 @@
         "app_other": "{{count}} アプリ",
         "categories": "カテゴリ",
         "first_party": "ファーストパーティ",
-        "sources": "ソース"
+        "sources": "ソース",
+        "curated_reviewed_by_the_kiro_crew_team": "{{productName}} チームが確認済み",
+        "community_listed_not_vetted_by_the_kiro_crew_team": "コミュニティ掲載、{{productName}} チームの検証なし"
       },
       "featuredSpotlight": {
         "collection": "コレクション",
@@ -5612,6 +5616,10 @@
         "working": "信頼して有効化しています…",
         "failed": "「{{app}}」をオンにできませんでしたが、信頼はすでに保存されている可能性があります。「再試行」を選ぶか、設定 → セキュリティ → 信頼済みサードパーティーアプリを開いて確認し、削除してください。",
         "failed_generic": "「{{app}}」をオンにできず、何も変更されませんでした。「再試行」を選ぶか、{{productName}} のログを確認してください。"
+      },
+      "registryTier": {
+        "curated": "チーム確認済み",
+        "community": "未検証"
       }
     },
     "artifactBody": {
@@ -7235,7 +7243,12 @@
       "name_is_taken_by_a_build_pinned_registry": "「{{name}}」はこのビルドで提供されるレジストリの名前です。別の名前を選んでください",
       "included_with_this_installation": "このインストールに含まれています",
       "trusted_source": "信頼されたソース",
-      "trusted_source_clones_with_your_git_credentials": "信頼されたソース — このレジストリのアプリは、あなたの Git 認証情報を使ってクローンされます。"
+      "trusted_source_clones_with_your_git_credentials": "信頼されたソース — このレジストリのアプリは、あなたの Git 認証情報を使ってクローンされます。",
+      "curated_tip_credentialed": "掲載前に {{productName}} チームが確認済みです。アプリはあなたの Git 認証情報でクローンされます。",
+      "curated_tip_credential_free": "掲載前に {{productName}} チームが確認済みです。アプリはあなたの Git 認証情報を使わずにクローンされます。",
+      "community_tip_credentialed": "軽度の確認のうえコントリビューターが掲載したものです。{{productName}} チームによる検証は行われていません。アプリは引き続きあなたの Git 認証情報でクローンされるため、見覚えのあるアプリのみインストールしてください。",
+      "community_tip_credential_free": "軽度の確認のうえコントリビューターが掲載したものです。{{productName}} チームによる検証は行われていません。見覚えのあるアプリのみインストールしてください。",
+      "registry_id": "ID: {{id}}"
     },
     "rejectDropdown": {
       "reject_all": "すべて拒否 — 残りは確認せずに拒否する",
@@ -8517,6 +8530,7 @@
     },
     "useWebSocket": {
       "response_ready": "応答の準備ができました",
+      "waiting_for_input": "入力をお待ちしています",
       "a_task_needs_your_decision": "タスクが決定を必要としています",
       "approval_required": "承認が必要です",
       "tool_approval": "ツールの承認：{{name}}",
@@ -9085,6 +9099,7 @@
       "click_the_bookmark_icon_on_any_rendered_widget_i": "チャットの任意のレンダリングされたウィジェットのブックマークアイコンをクリックして、ここに保存します。",
       "color": "色",
       "compact_table": "コンパクトテーブル",
+      "couldn_t_load_your_artifacts": "アーティファクトを読み込めませんでした",
       "create_a_folder_to_organize_your_artifacts": "アーティファクトを整理するためのフォルダーを作成",
       "delete": "削除…",
       "deploying": "デプロイ中…",
@@ -9957,7 +9972,9 @@
       "pop_out_to_window": "別ウィンドウに切り離す",
       "popped_out": "別ウィンドウで表示中",
       "previous_chats": "以前のチャット",
-      "regenerate_title_with_llm": "LLM でタイトルを再生成",
+      "regenerate_title_with_llm": "LLM でタイトルを再生成 — 現在の名前は「取り消し」で元に戻せます",
+      "auto_title": "自動タイトル",
+      "undo_auto_title": "取り消し",
       "remove_knowledge_context": "ナレッジコンテキストを削除",
       "return": "戻す",
       "return_this_session_to_the_main_window": "このセッションをメインウィンドウに戻す",
@@ -10400,6 +10417,8 @@
       "design_docs": "デザインドキュメント:",
       "dev_fleet": "Dev Fleet",
       "discovery_error": "検出エラー",
+      "live_state_unknown": "ライブ状態を取得できません",
+      "live_state_unknown_help": "ゲートウェイがどのチェックアウトがライブまたはステージ済みかを報告できなかったため、ライブとして表示されている行はありません。これは「不明」であり「なし」ではありません。ゲートウェイが応答するまで「ライブにする」は無効です。この通知内の「エージェントに質問」リンクを使ってください。",
       "disk": "ディスク:",
       "disk_worktrees": "ディスク（ワークツリー）",
       "dismiss": "却下",
@@ -13332,8 +13351,8 @@
         "category_agent_description": "エージェントがチャット外で自発的にメッセージを送信したとき",
         "category_all": "デフォルト(すべてのカテゴリ)",
         "category_all_description": "カテゴリ固有のオーバーライドが設定されていない場合のフォールバックサウンド",
-        "category_approval": "承認",
-        "category_approval_description": "ツール承認リクエスト",
+        "category_approval": "承認と質問",
+        "category_approval_description": "エージェントがツールの承認または回答を必要とするとき",
         "category_cron": "cron",
         "category_cron_description": "スケジュール済みジョブの完了",
         "category_heartbeat": "ハートビート",
@@ -13346,8 +13365,8 @@
         "category_subagent_description": "バックグラウンドサブエージェントの完了",
         "category_taskrunner": "タスク",
         "category_taskrunner_description": "Task Runnerの完了",
-        "category_turn": "エージェントの返信",
-        "category_turn_description": "エージェントが任意のチャットでターンを完了するとき",
+        "category_turn": "会話の引き継ぎ",
+        "category_turn_description": "会話が終了するか、入力待ちで一時停止したとき",
         "channel_default": "チャネルのデフォルト",
         "channel_not_active_app_disabled_setting_retained": "チャネルが非アクティブ(アプリが無効) — 設定は保持されます",
         "default_priority": "デフォルトの優先度：{{priority}}",
@@ -14182,6 +14201,7 @@
         "step_progress": "Step {{current}} of {{total}}",
         "keeps_running": "Keeps running if you leave this page.",
         "cancel": "Cancel",
+        "stop_waiting": "待機をやめる",
         "cancelling": "Cancelling…",
         "cancel_setup_of": "Cancel setup of {{tag}}",
         "launched_by_kiro_crew": "{{productName}} により起動",
@@ -14239,6 +14259,7 @@
         "launch_done": "完了 — 新しいインスタンスの準備ができ、「あなたのインスタンス」に表示されます。",
         "runs_on_gateway": "これはこのタブではなくゲートウェイ上で実行されます — ページを離れたりインスタンスを切り替えても続行します。完了するまで {{productName}} を起動したままにしてください。",
         "unverified_cloud_note": "{{productName}} はこのマシンに AWS リソースがあるかどうかを確認できません",
+        "stamped_ec2_note": "EC2 ランチャーで起動されました。インスタンスはまだ動作して課金されている可能性があります。削除してもこの一覧から外れるだけです。課金を止めるには、AWS コンソールから削除してください。",
         "remove_warning": "削除してもこの一覧から外れるだけです。クラウドインスタンスの場合、EC2 インスタンスは動作し続け、課金も続きます — AWS コンソールから削除してください。",
         "checking_against": "Checked against profile {{profile}} in {{region}}.",
         "no_profile_set": "none set (AWS CLI default)",
@@ -14248,8 +14269,15 @@
         "sign_in_unconfirmed": "サインインを確認できませんでした。下のコードはまだ有効な場合があります — ここで完了してから、インスタンスに接続してください。",
         "more_actions": "{{name}} のその他の操作",
         "edit_settings": "設定を編集",
+        "source_ec2": "EC2",
+        "type_ssm": "SSM",
+        "type_ssh": "SSH",
+        "source_ec2_hint": "EC2 ランチャーで起動されました。削除してもこの一覧から外れるだけです。AWS で削除するまで EC2 インスタンスは動作し続け、課金も続きます。",
+        "transport_hint_ssm": "AWS Systems Manager Session Manager 経由で接続します。",
+        "transport_hint_ssh": "SSH で接続します。",
         "edit_crew": "{{name}} を編集",
         "save_changes": "変更を保存",
+        "save_stopped_note": "待機を停止しました。その保存が反映されたかどうかは分かりません。一覧には現在の状態が表示されます。編集内容はそのままです。もう一度保存するか、キャンセルしてください。",
         "saving": "保存中…",
         "failed_to_save_crew": "このインスタンスを保存できませんでした",
         "edit_reconnect_note": "ホスト、ポート、接続方法を変更すると現在のトンネルを閉じます。準備ができたら再接続してください。",
@@ -14901,6 +14929,7 @@
       "session_open_error_named": "「{{name}}」を開けませんでした。",
       "session_open_error": "セッションを開けませんでした。",
       "session_gone_open_failed_named": "「{{name}}」は削除されたため開けません。",
+      "truncated_chars": "…({{count}} 文字を省略 — 再読み込みで全文を表示)",
       "truncated": "…(省略)"
     }
   },
@@ -15017,6 +15046,35 @@
       "gray": "グレー",
       "light": "ライト {{name}}",
       "white": "白"
+    },
+    "toolCallTitle": {
+      "and_more_other": "{{title}} ほか{{count}}件",
+      "build": "ビルド",
+      "create": "{{path}} を作成",
+      "edit": "{{path}} を編集",
+      "fetch": "{{host}} を取得",
+      "find_files": "「{{pattern}}」のファイルを検索",
+      "find_files_in": "{{path}} 内で「{{pattern}}」のファイルを検索",
+      "git": "Git {{sub}}",
+      "git_path": "Git {{sub}} {{path}}",
+      "github": "GitHub {{noun}} {{verb}}",
+      "github_api": "GitHub API {{path}}",
+      "github_target": "GitHub {{noun}} {{verb}} {{target}}",
+      "install_dependencies": "依存関係をインストール",
+      "lint": "Lint",
+      "list_files": "ファイル一覧",
+      "list_files_in": "{{path}} のファイル一覧",
+      "mcp_with_arg": "{{title}}：{{arg}}",
+      "print": "出力",
+      "read": "{{path}} を読み取り",
+      "read_range": "{{path}} を読み取り（{{from}}–{{to}}）",
+      "request": "{{method}} {{host}}",
+      "run_script": "スクリプト {{name}} を実行",
+      "run_tests": "テストを実行",
+      "search": "「{{query}}」を検索",
+      "search_in": "{{path}} 内で「{{query}}」を検索",
+      "search_web": "ウェブで「{{query}}」を検索",
+      "view_image": "画像 {{path}} を表示"
     }
   },
   "memoryV2": {
