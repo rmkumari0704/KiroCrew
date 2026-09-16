@@ -264,91 +264,98 @@ def test_no_transport_still_refuses_notimplemented() -> None:
         asyncio.run(connector.detect_changes({"id": "s", "repo_full_name": "o/r"}))
 
 
-# ── per-row ingest contract (chat-408 SourceRow API) ────────────────────────
-def test_supports_rows_false_and_fetch_rows_pending_until_api_lands() -> None:
-    # The ingest API (kiro_crew.knowledge.rows / acl) is not on this W01-based
-    # branch yet, so the row path is honestly parked: supports_rows() is False
-    # and fetch_rows raises a clear pending-API error, never a fabricated row.
-    from kiro_crew.knowledge.connectors.github_structured import _ingest_api_available
-    assert _ingest_api_available() is False
-    c = GithubStructuredConnector()
-    assert c.supports_rows() is False
-    with pytest.raises(LiveFetchError) as exc:
-        asyncio.run(c.fetch_rows({"id": "s", "repo_full_name": "o/r"}))
-    assert "per-row ingest API" in str(exc.value)
+# ── per-row ingest contract (real SourceRow API, integrated) ────────────────
+def _entity_routing_handler(recorder: _Recorder):
+    """Route by path: issues/pulls/commits each return one item; a commit's
+    check-runs return one check_run wrapped under `check_runs`."""
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:  # noqa: N802
+            recorder.requests.append({k: v for k, v in self.headers.items()})
+            recorder.paths.append(self.path)
+            p = self.path
+            if "/check-runs" in p:
+                body = json.dumps({"check_runs": [{
+                    "id": 555, "name": "ci", "head_sha": "abc123", "status": "completed",
+                    "conclusion": "success", "completed_at": "2026-09-03T00:00:00Z",
+                    "html_url": "h", "url": "https://api.github.com/repos/octo/hello/check-runs/555",
+                }]}).encode()
+            elif "/commits" in p:
+                body = json.dumps([{
+                    "sha": "abc123",
+                    "commit": {"message": "m", "committer": {"name": "c", "date": "2026-09-02T00:00:00Z"}},
+                    "html_url": "h", "url": "https://api.github.com/repos/octo/hello/commits/abc123",
+                    "parents": [],
+                }]).encode()
+            elif "/issues" in p:
+                body = json.dumps([{
+                    "number": 9, "title": "iss", "state": "open", "user": {"login": "u"},
+                    "updated_at": "2026-09-01T00:00:00Z",
+                    "html_url": "h", "url": "https://api.github.com/repos/octo/hello/issues/9",
+                }]).encode()
+            else:  # pulls
+                body = json.dumps([{
+                    "number": 3, "title": "pr", "state": "open", "user": {"login": "u"},
+                    "pull_request": {}, "updated_at": "2026-09-01T00:00:00Z",
+                    "html_url": "h", "url": "https://api.github.com/repos/octo/hello/pulls/3",
+                }]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a: Any) -> None:
+            return
+
+    return _H
 
 
-@pytest.fixture
-def stub_ingest_api(monkeypatch: pytest.MonkeyPatch):
-    """Inject faithful stand-ins for chat-408's rows.py / acl.py + supports_rows.
+def test_fetch_rows_covers_all_four_entities_incl_checkrun_fanout(
+    tmp_path: Path, real_vault: SecretVault, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    certfile, keyfile = _tls_material(tmp_path)
+    monkeypatch.setenv("SSL_CERT_FILE", str(certfile))
+    rec = _Recorder()
+    with _https_server(_entity_routing_handler(rec), certfile, keyfile) as port:
+        import kiro_crew.connections.vendors.github.locator as gh_locator
+        monkeypatch.setattr(gh_locator, "GITHUB_API_BASE", f"https://localhost:{port}")
+        connector = GithubStructuredConnector(
+            transport_provider=lambda s, e: _bundle_for(real_vault))
+        rows, snapshot, checkpoint = asyncio.run(
+            connector.fetch_rows({"id": "src-1", "repo_full_name": "octo/hello"}))
+    # issue + PR + commit + a check-run fanned out from that commit = 4 rows.
+    assert len(rows) == 4
+    assert {r.resource_ref.provider for r in rows} == {"github"}
+    # The check-run row was fanned out per the commit sha (its ref path was hit).
+    assert any("/check-runs" in p for p in rec.paths)
+    assert any("/commits" in p for p in rec.paths)
+    assert any("/issues" in p for p in rec.paths)
+    assert any("/pulls" in p for p in rec.paths)
+    assert any(r.resource_ref.locator.get("check_run_id") for r in rows)
+    # Still fail-closed + incremental.
+    assert all(r.subjects == () and r.tenant == "octo" for r in rows)
+    assert snapshot is False
 
-    The real DTOs live on a different dependency stack, so these mirror their
-    load-bearing invariants: SourceRow requires a non-empty key + tenant + a
-    resource_ref, accepts an EMPTY subjects tuple (deny-all) and forces
-    managed=True; ProviderResourceRef carries provider/account/resource_id/
-    locator. The test drives the real fetch_rows against these so the wiring is
-    verified now; the in-slice flip to the real API is then a no-op.
-    """
 
-    import sys
-    import types
-    from dataclasses import dataclass, field
-    from typing import Any, Mapping, Optional
-
-    acl_mod = types.ModuleType("kiro_crew.knowledge.acl")
-
-    @dataclass(frozen=True)
-    class ProviderResourceRef:
-        provider: str
-        account: str = ""
-        resource_id: str = ""
-        locator: Mapping[str, Any] = field(default_factory=dict)
-
-    acl_mod.ProviderResourceRef = ProviderResourceRef
-    acl_mod.PUBLIC_SUBJECT = "<public>"
-    acl_mod.PUBLIC_TENANT = "<public-tenant>"
-
-    rows_mod = types.ModuleType("kiro_crew.knowledge.rows")
-
-    @dataclass(frozen=True)
-    class SourceRow:
-        key: str
-        text: str
-        subjects: tuple
-        tenant: str
-        resource_ref: Optional[Any] = None
-        title: Optional[str] = None
-        item_type: str = "document"
-
-        @property
-        def managed(self) -> bool:
-            return True
-
-        def __post_init__(self) -> None:
-            if not self.key:
-                raise ValueError("key required")
-            if self.resource_ref is None:
-                raise ValueError("resource_ref required")
-            if not self.tenant:
-                raise ValueError("tenant required")
-            if not isinstance(self.subjects, tuple):
-                raise ValueError("subjects must be a tuple")
-
-    rows_mod.SourceRow = SourceRow
-
-    monkeypatch.setitem(sys.modules, "kiro_crew.knowledge.acl", acl_mod)
-    monkeypatch.setitem(sys.modules, "kiro_crew.knowledge.rows", rows_mod)
-    # supports_rows() also checks BaseConnector has the attribute.
-    from kiro_crew.knowledge.connectors.base import BaseConnector
-    if not hasattr(BaseConnector, "supports_rows"):
-        monkeypatch.setattr(BaseConnector, "supports_rows", lambda self: False, raising=False)
-    return SourceRow, ProviderResourceRef
+def test_supports_rows_is_true_with_the_real_ingest_api() -> None:
+    # The real per-row ingest API (kiro_crew.knowledge.rows / acl) is integrated
+    # into this branch, so the connector emits structured rows.
+    from kiro_crew.knowledge.rows import SourceRow  # real symbol, not a stand-in
+    assert SourceRow is not None
+    assert GithubStructuredConnector().supports_rows() is True
 
 
 def test_fetch_rows_returns_failclosed_sourcerows_over_tls(
-    tmp_path: Path, real_vault: SecretVault, monkeypatch: pytest.MonkeyPatch, stub_ingest_api,
+    tmp_path: Path, real_vault: SecretVault, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    SourceRow, ProviderResourceRef = stub_ingest_api
+    # Exercises the GENUINE SourceRow / ProviderResourceRef symbols (integrated),
+    # not a stand-in.
+    from kiro_crew.knowledge.acl import ProviderResourceRef
+    from kiro_crew.knowledge.rows import SourceRow
+
     certfile, keyfile = _tls_material(tmp_path)
     monkeypatch.setenv("SSL_CERT_FILE", str(certfile))
     rec = _Recorder()
@@ -360,10 +367,10 @@ def test_fetch_rows_returns_failclosed_sourcerows_over_tls(
         connector = GithubStructuredConnector(
             transport_provider=lambda s, e: _bundle_for(real_vault) if e == ENTITY_PULL_REQUEST else None,
         )
-        assert connector.supports_rows() is True  # API now importable via stubs
+        assert connector.supports_rows() is True
         rows, snapshot, checkpoint = asyncio.run(
             connector.fetch_rows({"id": "src-1", "repo_full_name": "octo/hello"}))
-    # Real rows across BOTH pages, each a SourceRow with fail-closed ACL.
+    # Real rows across BOTH pages, each a genuine SourceRow with fail-closed ACL.
     assert len(rows) == 2
     for row in rows:
         assert isinstance(row, SourceRow)

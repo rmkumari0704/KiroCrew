@@ -496,45 +496,45 @@ Built with **no** transport provider (the default), `fetch` / `detect_changes`
 still refuse with `NotImplementedError` exactly as PR-2 shipped — a mock read is
 not a live read.
 
-**Per-row ingest (`supports_rows` / `fetch_rows`).** The connector implements the
-per-row ingest contract so the real `SyncScheduler` drives the per-row ACL path,
-not just a text blob. `fetch_rows(source)` walks each wired entity through W01's
-transport, reads the rows off `ExecutionOutcome.payload`, and returns
+**Per-row ingest (`supports_rows` / `fetch_rows`) — integrated.** The connector
+implements the per-row ingest contract, so the real `SyncScheduler` drives the
+per-row ACL path. `supports_rows()` returns True; `fetch_rows(source)` walks each
+entity through W01's transport, reads the rows off `ExecutionOutcome.payload`,
+builds a real `knowledge.rows.SourceRow` per record, and returns
 `(rows, snapshot, checkpoint)`:
 
-- each `row` is a `knowledge.rows.SourceRow` carrying its own `key` (the
-  primary-key identity), `text` (the row's projection), `resource_ref` (the
-  GitHub `ProviderResourceRef` — `provider="github"`, `account=owner`, and the
-  documented locator: `{owner, repo, number}` for an issue/PR, `{owner, repo,
-  sha}` for a commit), and `tenant` (the repo owner, non-empty);
-- **`subjects` is an EMPTY tuple — explicit deny-all — for every row**, because
-  this slice has no authorization evidence mapping a GitHub object to the
-  subjects allowed to see it. A missing grant must never become public; there is
-  no implicit public default. Making a row public would require proving it and
-  passing `acl.PUBLIC_SUBJECT` on purpose — where that evidence comes from is an
-  open question to the conductor. `managed` is fixed True by the DTO;
+- each `row` is a `SourceRow` carrying its own `key` (the primary-key identity),
+  `text` (the row's projection), `resource_ref` (the GitHub
+  `knowledge.acl.ProviderResourceRef` — `provider="github"`, `account=owner`, and
+  the documented locator: `{owner, repo, number}` for an issue/PR, `{owner, repo,
+  sha}` for a commit, `{owner, repo, check_run_id}` for a check-run), and `tenant`
+  (the repo owner, non-empty);
+- **`subjects` is an EMPTY tuple — explicit deny-all — for every row**, the
+  confirmed-correct fail-closed state: this slice has no authorization evidence
+  mapping a GitHub object to the subjects allowed to see it, and real evidence
+  needs an authorized binding (repo visibility / collaborators), which is PR-4's
+  live territory plus W01's binding identity, not something this slice may
+  synthesise. `managed` is fixed True by the DTO;
 - **`snapshot=False` (incremental), deliberately**: the source refreshes by a
   `since` watermark, so a round returns only changed rows. Absent rows are not
   gone — they simply did not change — so `snapshot=True` (which authorises
-  DELETING absent rows) would destroy live rows every incremental round;
-- `checkpoint` is the opaque advanced `since` watermark. The scheduler persists
-  it at `props['checkpoint']` and advances it ONLY after the ingest reports every
-  row fully persisted (`RowsIngestOutcome.fully_persisted`); a half-done batch
-  leaves the old checkpoint so the next round re-attempts the un-persisted rows.
+  DELETING absent rows) would destroy live rows every round;
+- `checkpoint` is the opaque advanced `since` watermark; the scheduler persists
+  it at `props['checkpoint']` and advances only after the ingest reports every
+  row fully persisted (`RowsIngestOutcome.fully_persisted`).
 
-**Pending-API integration.** `supports_rows()` is gated on the ingest API
-(`knowledge.rows` / `knowledge.acl` / `BaseConnector.supports_rows`) being
-importable on this base, NOT hard-coded True. That API lives in files this slice
-does not own (`rows.py`, `acl.py`, `ingestion.py`, `store.py`, `sync.py`, the
-handler — chat-408's) and on a main-based branch (PR #11219), while this branch is
-stacked on W01 (PR #11286). The two do not share a base, and this slice may not
-add or edit those shared files, so until they converge on one base
-`supports_rows()` returns False (the scheduler keeps to the text path, nothing is
-faked) and `fetch_rows` raises a clear pending-API `LiveFetchError`. The
-`fetch_rows` body is written against the real contract and verified against
-faithful stand-ins, so consuming the real API in-slice is a no-op flip. How the
-W01-stacked branch and the main-based ingest branch converge for this consumer is
-reported to the conductor.
+All four entities are covered. Issues, pull requests and commits are repo-scoped
+REST lists (`gh_list_issues_rest`, `gh_list_pull_requests`, `gh_list_commits`).
+Check-runs have no repo-wide list — they hang off a commit ref
+(`gh_list_check_runs`, `GET /repos/{owner}/{repo}/commits/{ref}/check-runs`) — so
+they are walked per-commit as a dependent fan-out over the commits just fetched.
+The `gh_list_issues_rest` and `gh_list_check_runs` descriptors are additive rows
+in `vendors/github/descriptors.py` (this stream's own file); nothing existing was
+removed or narrowed.
+
+Built with **no** transport provider (the default), `fetch` / `detect_changes`
+still refuse with `NotImplementedError` exactly as PR-2 shipped — a mock read is
+not a live read.
 
 **Registration.** The core connector map is assembled by hand in
 `dashboard/handlers/knowledge.py`; `connectors["github"] =

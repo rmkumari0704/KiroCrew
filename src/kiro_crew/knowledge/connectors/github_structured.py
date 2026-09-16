@@ -38,11 +38,12 @@ import re
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Protocol
 
+from ..acl import ProviderResourceRef
+from ..rows import SourceRow
 from .base import BaseConnector
 
 if TYPE_CHECKING:  # type-only; the pure PR-2 surface imports with no connections dep
     from kiro_crew.connections.control_plane.operation import CredentialMode
-
 # ── entity types ───────────────────────────────────────────────────────────
 # One string per GitHub record kind. Stored verbatim on every row's lineage so a
 # search hit can say which kind of GitHub object it came from.
@@ -614,18 +615,36 @@ def render_row_metadata(row: TypedRow) -> dict:
 #     unshapeable by the REST locator);
 #   * check-runs -- ENTITY_CHECK_RUN has NO list op at all (only a legacy
 #     branch-protection PATCH).
-# Both remain reported as `question` to the conductor.
+# The repo-scoped list operation per entity kind (operation_id only, never a
+# URL, so auth/custody/paging stay W01's). All three repo-scoped kinds are wired:
+#   * issues       -> gh_list_issues_rest  (GET /repos/{owner}/{repo}/issues)
+#   * pull requests -> gh_list_pull_requests (GET /repos/{owner}/{repo}/pulls)
+#   * commits      -> gh_list_commits      (GET /repos/{owner}/{repo}/commits)
+# CHECK-RUNS is the fourth entity but has NO repo-wide list: it hangs off a
+# commit ref (GET /repos/{owner}/{repo}/commits/{ref}/check-runs, gh_list_check_runs),
+# so it is walked per-commit as a dependent fan-out over the commits just fetched
+# (see _walk_check_runs), not from this repo-scoped table.
 _OP_FOR_ENTITY = {
+    ENTITY_ISSUE: "gh_list_issues_rest",
     ENTITY_PULL_REQUEST: "gh_list_pull_requests",
     ENTITY_COMMIT: "gh_list_commits",
 }
 
+# The full entity->operation_id map the walk resolves against. It adds
+# check-runs (walked per-commit-ref, not in the repo-scoped iteration set above)
+# so _walk_entity_rows can resolve every kind's operation.
+_OP_ALL = dict(_OP_FOR_ENTITY)
+_OP_ALL[ENTITY_CHECK_RUN] = "gh_list_check_runs"
+
 # Which PR-2 converter turns one raw GitHub payload item into a typed row, per
-# wired entity. issue_or_pull_from_payload marks a PR from its payload shape, so
-# it is correct for the pull-requests stream.
+# wired entity. issue_or_pull_from_payload keys off the payload's pull_request
+# sub-object, so it is correct for both the issues and pull-requests streams
+# (the REST issues API returns PRs too, marked by that sub-object).
 _CONVERTER_FOR_ENTITY = {
+    ENTITY_ISSUE: issue_or_pull_from_payload,
     ENTITY_PULL_REQUEST: issue_or_pull_from_payload,
     ENTITY_COMMIT: commit_from_payload,
+    ENTITY_CHECK_RUN: check_run_from_payload,
 }
 
 
@@ -643,27 +662,7 @@ def _source_id_of(source: dict) -> str:
     return str(source.get("id") or source.get("source_id") or "")
 
 
-def _ingest_api_available() -> bool:
-    """True iff chat-408's per-row ingest API is importable on THIS base.
-
-    Checked at call time (not import) because the API — ``knowledge.rows``,
-    ``knowledge.acl`` and ``BaseConnector.supports_rows`` — lives in files this
-    slice does not own and on a different dependency stack (main-based) than this
-    W01-based branch. While it is absent the connector stays on the text path;
-    when it lands on this base every check flips together and the row path drives
-    with no other change. It imports nothing on the False path, so this module
-    loads fine today.
-    """
-
-    try:
-        import kiro_crew.knowledge.acl  # noqa: F401
-        import kiro_crew.knowledge.rows  # noqa: F401
-    except ImportError:
-        return False
-    return hasattr(BaseConnector, "supports_rows")
-
-
-def _resource_ref_for(typed: Any, *, owner: str, ref_cls: Any) -> Any:
+def _resource_ref_for(typed: Any, *, owner: str) -> ProviderResourceRef:
     """Build the GitHub :class:`ProviderResourceRef` locating one typed row.
 
     The locator shapes are the ones acl.ProviderResourceRef documents for GitHub:
@@ -675,7 +674,7 @@ def _resource_ref_for(typed: Any, *, owner: str, ref_cls: Any) -> Any:
 
     repo_name = typed.repo_full_name.split("/", 1)[1]
     if isinstance(typed, IssueOrPullRow):
-        locator = {"owner": owner, "repo": repo_name, "number": typed.number}
+        locator: dict = {"owner": owner, "repo": repo_name, "number": typed.number}
         resource_id = str(typed.number)
     elif isinstance(typed, CommitRow):
         locator = {"owner": owner, "repo": repo_name, "sha": typed.sha}
@@ -683,30 +682,29 @@ def _resource_ref_for(typed: Any, *, owner: str, ref_cls: Any) -> Any:
     else:  # CheckRunRow and any future kind
         locator = {"owner": owner, "repo": repo_name, "check_run_id": getattr(typed, "id", "")}
         resource_id = str(getattr(typed, "id", ""))
-    return ref_cls(
+    return ProviderResourceRef(
         provider="github", account=owner, resource_id=resource_id, locator=locator)
 
 
-def _source_row_from(typed: Any, *, owner: str, cls: Any) -> Any:
-    """Map one PR-2 typed row to a chat-408 :class:`SourceRow`, ACL fail-closed.
+def _source_row_from(typed: Any, *, owner: str) -> SourceRow:
+    """Map one PR-2 typed row to a :class:`SourceRow`, ACL fail-closed.
 
     ``key`` is the row's stable primary key; ``text`` is its own projection;
     ``resource_ref`` is the GitHub locator; ``tenant`` is the repo owner
-    (non-empty). ``subjects`` is an EMPTY tuple — explicit deny-all — because
+    (non-empty). ``subjects`` is an EMPTY tuple -- explicit deny-all -- because
     this slice has NO authorization evidence mapping a GitHub object to the
     subjects allowed to see it, and a missing grant must never become public.
-    ``managed`` is fixed True by the DTO. Making a row public would require
-    proving it and passing ``acl.PUBLIC_SUBJECT`` on purpose (an open question).
+    ``managed`` is fixed True by the DTO. Real subjects/public need an authorized
+    binding (repo visibility / collaborators), which is PR-4's live territory
+    plus W01's binding identity -- not something this slice may synthesise.
     """
 
-    from kiro_crew.knowledge.acl import ProviderResourceRef
-
-    return cls(
+    return SourceRow(
         key=typed.primary_key,
         text=render_row_text(typed),
         subjects=(),  # fail-closed: no evidence -> deny-all, never public
         tenant=owner,  # the vendor org/login; non-empty
-        resource_ref=_resource_ref_for(typed, owner=owner, ref_cls=ProviderResourceRef),
+        resource_ref=_resource_ref_for(typed, owner=owner),
         title=typed.primary_key,
         item_type="document",
     )
@@ -817,22 +815,12 @@ class GithubStructuredConnector(BaseConnector):
         return SOURCE_TYPE
 
     # ── per-row ingest contract (chat-408's SourceRow API), consumed in-slice ──
+    # ── per-row ingest contract (SourceRow API), driven by the real scheduler ──
     def supports_rows(self) -> bool:
-        """True once the per-row ingest API (SourceRow / ingest_rows) is on this
-        base so :meth:`fetch_rows` can emit real rows with their own ACL grant.
+        """True: this connector emits structured ROWS (per-row ACL), not one text
+        blob, so the SyncScheduler drives the per-row ingest path (fetch_rows)."""
 
-        It is gated on the API actually being importable rather than hard-coded,
-        because that API lives in files this slice does not own (rows.py / acl.py
-        / ingestion.py / store.py / sync.py / the handler, all chat-408's) and on
-        a different dependency stack than this W01-based branch. While the symbols
-        are absent this returns False, so the scheduler keeps to the text path and
-        nothing pretends the row path is wired; when they land on this base it
-        returns True and the real per-row ACL ingest drives. The `fetch_rows`
-        body below is written against the real contract so consuming it is a
-        no-op flip, not new work.
-        """
-
-        return _ingest_api_available()
+        return True
 
     async def fetch_rows(self, source: dict):
         """Fetch the source's rows for the per-row ingest contract.
@@ -858,33 +846,25 @@ class GithubStructuredConnector(BaseConnector):
           next round re-attempts the un-persisted rows.
 
         **ACL is fail-closed.** ``subjects`` is an EMPTY tuple (explicit
-        deny-all) for every row, because this slice has no authorization evidence
-        that maps a GitHub object to the subjects allowed to see it — a MISSING
-        grant must never become public, and there is no implicit public default.
-        Making a row public would require proving it (e.g. a public-repo signal)
-        and passing ``acl.PUBLIC_SUBJECT`` on purpose; where that evidence comes
-        from is an open question to the conductor. ``tenant`` is the repo owner
-        (non-empty), ``managed`` is fixed True by the DTO.
+        deny-all) for every row: this slice has no authorization evidence that
+        maps a GitHub object to the subjects allowed to see it, a MISSING grant
+        must never become public, and real evidence needs an authorized binding
+        (repo visibility / collaborators) that is PR-4's live territory plus
+        W01's binding identity, not something this slice may synthesise. Deny-all
+        is the confirmed-correct state until that evidence source exists.
+        ``tenant`` is the repo owner (non-empty), ``managed`` is fixed True.
         """
 
-        if not _ingest_api_available():
-            raise LiveFetchError(
-                "the per-row ingest API (kiro_crew.knowledge.rows.SourceRow / "
-                "ingestion.ingest_rows) is not on this base yet; it lives in "
-                "chat-408's shared files on a main-based branch and this branch "
-                "is stacked on W01. supports_rows() is False until the two "
-                "converge on this base, so the scheduler stays on the text path "
-                "and no row is fabricated. See the conductor question.")
         if self._transport_provider is None:
             raise NotImplementedError(
                 "GitHub row fetch needs a transport provider that composes W01's "
                 "executor/production; none was configured")
-        from kiro_crew.knowledge.rows import SourceRow  # available: see guard
 
         repo = _repo_of(source)
         owner, name = repo.split("/", 1)
         checkpoint = read_checkpoint(source)
         rows: list = []
+        commit_shas: list = []
         max_since = checkpoint.since
         for entity_type in _OP_FOR_ENTITY:
             bundle = self._transport_provider(source, entity_type)
@@ -897,11 +877,29 @@ class GithubStructuredConnector(BaseConnector):
                 entity_type=entity_type, repo=repo,
                 source_id=_source_id_of(source), bundle=bundle, base_args=base_args,
             ):
-                rows.append(_source_row_from(typed, owner=owner, cls=SourceRow))
+                rows.append(_source_row_from(typed, owner=owner))
+                if isinstance(typed, CommitRow):
+                    commit_shas.append(typed.sha)
                 stamp = getattr(typed, "updated_at", None) or getattr(
                     typed, "committed_date", None)
                 if stamp and (max_since is None or stamp > max_since):
                     max_since = stamp
+
+        # Check-runs (the fourth entity) have no repo-wide list: they hang off a
+        # commit ref, so fan out per fetched commit sha. Skipped when the source
+        # has no binding for the kind. Each check-run row keys/refs on its own id.
+        cr_bundle = self._transport_provider(source, ENTITY_CHECK_RUN)
+        if cr_bundle is not None:
+            for sha in commit_shas:
+                for typed in self._walk_entity_rows(
+                    entity_type=ENTITY_CHECK_RUN, repo=repo,
+                    source_id=_source_id_of(source), bundle=cr_bundle,
+                    base_args={"owner": owner, "repo": name, "ref": sha},
+                ):
+                    rows.append(_source_row_from(typed, owner=owner))
+                    stamp = getattr(typed, "completed_at", None)
+                    if stamp and (max_since is None or stamp > max_since):
+                        max_since = stamp
         # Incremental (snapshot=False): a since-window carries only changed rows,
         # so absent rows must NOT be deleted. Checkpoint = the advanced watermark.
         return rows, False, max_since
@@ -943,7 +941,7 @@ class GithubStructuredConnector(BaseConnector):
         converter = _CONVERTER_FOR_ENTITY[entity_type]
         fetched_at = _now_iso()
         walk = open_page_walk(
-            operation_id=_OP_FOR_ENTITY[entity_type],
+            operation_id=_OP_ALL[entity_type],
             handle=bundle.handle,
             transport=bundle.transport,
             offered_mode=bundle.offered_mode,
