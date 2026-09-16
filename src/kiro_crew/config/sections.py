@@ -231,6 +231,28 @@ def coerce_fallback_model(raw: object) -> str:
     return model_registry.to_provider_id(s, "acp") or "auto"
 
 
+def coerce_refusal_fallback_model(raw: object) -> str:
+    """Normalize the content-filter fallback model (agent.refusal_fallback_model).
+
+    Same three shapes as :func:`coerce_fallback_model` but with the OPPOSITE
+    junk default: ``""`` (the default) disables the feature — a refusal then
+    surfaces exactly as it does today — so absent/junk input (``None``,
+    non-string) and an id the registry maps to ``""`` all collapse to ``""``
+    (off), never to a silently-enabled value. ``"auto"`` means "retry on the
+    model the provider's refusal envelope recommends, when it names one"; a
+    concrete id is normalized through :func:`model_registry.to_provider_id`
+    for the ``acp`` provider.
+    """
+    if raw is None or not isinstance(raw, str):
+        return ""
+    s = raw.strip()
+    if not s:
+        return ""
+    if s.lower() == "auto":
+        return "auto"
+    return model_registry.to_provider_id(s, "acp") or ""
+
+
 def _safe_int(value: object, default: int, lo: int | None = None, hi: int | None = None) -> int:
     """Convert a legacy numeric config value or return *default* on failure.
 
@@ -863,6 +885,21 @@ class AgentConfig:
             "silent.",
         ),
     )
+    refusal_fallback_model: str = field(
+        default="",
+        metadata=_meta(
+            "Refusal fallback model",
+            "Model the current message is retried on ONCE when the active "
+            "model's content filter declines it (refusal / CONTENT_FILTERED). "
+            "Empty ('', the default) disables the retry: the refusal card "
+            "surfaces exactly as before. A concrete model id (as advertised "
+            "by the provider, e.g. 'claude-opus-4.8') retries that single "
+            "message on it and restores the primary model on the next turn; "
+            "'auto' retries on the model the provider's refusal envelope "
+            "recommends, when it names one. The retry is announced in chat — "
+            "never silent — and a refusal from the fallback too is terminal.",
+        ),
+    )
     reasoning_effort: str = field(
         default="",
         metadata=_meta(
@@ -1454,6 +1491,9 @@ class AgentConfig:
         # Same defensive coercion for the throttle-fallback model: normalize to
         # ""/"auto"/acp id, so consumers can trust the stored shape.
         self.fallback_model = coerce_fallback_model(self.fallback_model)
+        # And for the content-filter fallback model — same shapes, junk
+        # collapses to "" (off) rather than "auto".
+        self.refusal_fallback_model = coerce_refusal_fallback_model(self.refusal_fallback_model)
 
     def resolve_model(self, role: str) -> str:
         """Effective model id for a task ``role`` — INDEPENDENT of the chat model.

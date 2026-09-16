@@ -24,6 +24,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 
 from kiro_crew import members as members_mod
 from kiro_crew import model_registry
+from kiro_crew.llm_helpers import pick_epoch_host, slot_switch_session_lock
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of
@@ -1088,9 +1089,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # instead of leaving the turn's input unexplained. Passed only when there ARE
     # some: an ordinary send then calls `_run_chat` with exactly the arguments it
     # always did, which is what keeps the many test doubles of it valid.
-    _accepted_attachments = [
-        path for paths in attachment_meta(user_meta).values() for path in paths
-    ]
+    _accepted_attachment_meta = attachment_meta(user_meta)
+    _accepted_attachments = [path for paths in _accepted_attachment_meta.values() for path in paths]
     # ``request_app`` is stamped by the app-token auth middleware, not read from
     # the request body, so it is a fact about the caller a person cannot write --
     # which is what lets the turn's actor come from it. Passing it is what keeps
@@ -1102,6 +1102,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         _turn_kwargs["_turn_actor"] = "app"
     if _accepted_attachments:
         _turn_kwargs["_attachments"] = _accepted_attachments
+        # Typed form for the refusal replay: keeps ``dirs`` entries as folders.
+        _turn_kwargs["_attachment_meta"] = _accepted_attachment_meta
     task = spawn_guarded_turn(
         state,
         slot,
@@ -6139,17 +6141,13 @@ class _CommitToken(str):
 # CONSTRUCTION, so there is no window to guard and no new decision point to
 # get wrong. The ExitStack is what lets a lock be acquired mid-block without
 # nesting the whole remaining transaction one level deeper.
-_slot_switch_session_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
-    weakref.WeakValueDictionary()
-)
-
-
-def _slot_switch_session_lock(session_key: str) -> asyncio.Lock:
-    lock = _slot_switch_session_locks.get(session_key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _slot_switch_session_locks[session_key] = lock
-    return lock
+#
+# The lock itself lives in ``kiro_crew.llm_helpers``
+# (``slot_switch_session_lock``) so the chat runner's refusal-fallback
+# restore can take the SAME lock — this module imports from the runner, so
+# the runner cannot import it from here without a cycle. The local name is
+# kept for the acquisition sites below.
+_slot_switch_session_lock = slot_switch_session_lock
 
 
 async def api_chat_slot_agent(request: web.Request) -> web.Response:
@@ -6886,6 +6884,20 @@ async def _try_live_model_switch(
         return False
     if not await _reapply_effort_after_live_switch(name, slot, provider):
         return False
+    # Client-scoped explicit-pick epoch. The pick GENERATION above is
+    # slot-local, but two slots can drive one wire session (a channel-born
+    # slot and its dashboard alias share `effective_session_key`), and the
+    # refusal-fallback restore guard on another slot cannot see this slot's
+    # generation. The shared CLIENT is the one object every alias holds, so
+    # an explicit pick that lands on the live session stamps it here and the
+    # restore compares against its swap-time snapshot. pick_epoch_host
+    # resolves the SAME innermost object on both ends — this handler holds
+    # the AcpProvider wrapper while the runner can hold the wrapped client.
+    try:
+        _host = pick_epoch_host(provider)
+        _host._explicit_pick_epoch = getattr(_host, "_explicit_pick_epoch", 0) + 1
+    except Exception:  # pragma: no cover - a frozen/slotted stub client
+        pass
     logger.info("Slot %s model switched live to %r (session preserved)", name, wire)
     return True
 
@@ -7005,7 +7017,11 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # Checked INSIDE the locks only: a serialized predecessor targeting the
         # same model may have committed while this request waited, and acting
         # again would tear down the session that predecessor just set up.
-        if slot.model == model_name and not slot._active_fallback_model:
+        if (
+            slot.model == model_name
+            and not slot._active_fallback_model
+            and not slot._refusal_fallback_primary
+        ):
             # Same-value pick: nothing to switch, but the user's EXPLICIT
             # affirmation of this model must still be recorded — the fallback
             # restore probe reads the pick generation, and without the bump a user
@@ -7022,6 +7038,20 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             # pick-the-fallback-itself case also flows through the live path,
             # where the switch is a harmless same-model set and the pick-gen bump
             # still protects the choice from the restore probe.
+            # The slot-local bump alone is invisible ACROSS aliases: two slots
+            # can drive one wire session, and the other slot's refusal-fallback
+            # restore compares the shared CLIENT's epoch, not this slot's
+            # generation. A same-value pick is still an explicit pick, so stamp
+            # the shared epoch exactly as the live-switch success path does —
+            # otherwise an alias pinned to the fallback candidate re-picks it,
+            # takes this shortcut, and the originating slot's restore silently
+            # undoes the choice.
+            _provider = state.sessions.get_provider(session_key)
+            try:
+                _host = pick_epoch_host(_provider)
+                _host._explicit_pick_epoch = getattr(_host, "_explicit_pick_epoch", 0) + 1
+            except Exception:  # pragma: no cover - a frozen/slotted stub client
+                pass
             slot._model_pick_gen += 1
             return web.json_response({"ok": True, "model": model_name})
         provider = state.sessions.get_provider(session_key)

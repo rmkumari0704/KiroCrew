@@ -11,6 +11,7 @@ import json
 import logging
 import random
 import time
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -671,6 +672,58 @@ async def advance_fallback_candidate(
             log_suffix,
         )
         return wire
+
+
+def pick_epoch_host(provider: Any) -> Any:
+    """The one object the explicit-pick epoch lives on for this session.
+
+    A pick and a refusal-fallback restore can hold DIFFERENT layers of the
+    same session — the model handler holds the ``AcpProvider`` wrapper while
+    the chat runner's acquisition can hand the wrapped client — so both must
+    resolve the SAME host or the writer stamps an object the reader never
+    sees. The innermost wrapped client wins, following the same unwrap order
+    as :func:`resolve_substitute_set_model`; a bare test client resolves to
+    itself.
+    """
+    for attr in ("client", "_client"):
+        try:
+            inner = getattr(provider, attr, None)
+        except Exception:  # pragma: no cover - exotic property getters
+            inner = None
+        if inner is not None and not callable(inner):
+            return inner
+    return provider
+
+
+_slot_switch_session_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def slot_switch_session_lock(session_key: str) -> asyncio.Lock:
+    """The per-session lock every explicit model switch runs under.
+
+    Serializes model switches for aliases of ONE session — a channel-born
+    slot and its dashboard twin drive one wire session through disjoint slot
+    objects, so per-slot locks cannot order their switches. The switch
+    handlers in ``chat_handlers`` acquire it between ``slot._lock`` and
+    ``slot._model_pick_lock`` (the lock-order contract is documented at
+    their acquisition site); the chat runner's refusal-fallback restore
+    acquires it before the pick lock, so a restore's ``set_model(primary)``
+    await cannot interleave with an alias pick and silently overwrite the
+    user's selection. Lives here rather than in
+    ``chat_handlers`` because ``chat_handlers`` imports from the runner —
+    the runner could not import it back without a cycle.
+
+    A ``WeakValueDictionary`` so a session's lock is collected once no
+    request holds it; unrelated sessions resolve different keys and so take
+    different locks.
+    """
+    lock = _slot_switch_session_locks.get(session_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _slot_switch_session_locks[session_key] = lock
+    return lock
 
 
 def resolve_substitute_set_model(provider: Any) -> Callable[[str], Awaitable[None]] | None:

@@ -210,6 +210,11 @@ class _Slot:
         self._stop_generation = 0
         # Mirrors _ChatSlot._chunk_seq: the per-slot chunk counter _run_chat continues.
         self._chunk_seq = 0
+        # Mirrors _ChatSlot._refusal_retry_text/_refusal_fallback_attempted: the
+        # dispatch gate reads both on EVERY turn to tell a refusal replay apart
+        # from a genuine message, prompt turns included.
+        self._refusal_retry_text = ""
+        self._refusal_fallback_attempted = False
         self.linked_session_key = ""
         # Mirrors _ChatSlot.project: the per-slot local project @mention/​/prompts
         # resolve against. "" means no project (global prompts only), matching

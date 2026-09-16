@@ -20,6 +20,7 @@
         "role_models": {},
         "role_efforts": {},
         "fallback_model": "auto",
+        "refusal_fallback_model": "",
         "reasoning_effort": "",
         "provider": "acp",
         "mcp_registry_mode": false,
@@ -194,6 +195,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "auto"
+    },
+    {
+      "path": "agent.refusal_fallback_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Refusal fallback model",
+      "help": "Model the current message is retried on ONCE when the active model's content filter declines it (refusal / CONTENT_FILTERED). Empty ('', the default) disables the retry: the refusal card surfaces exactly as before. A concrete model id (as advertised by the provider, e.g. 'claude-opus-4.8') retries that single message on it and restores the primary model on the next turn; 'auto' retries on the model the provider's refusal envelope recommends, when it names one. The retry is announced in chat — never silent — and a refusal from the fallback too is terminal.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "agent.reasoning_effort",

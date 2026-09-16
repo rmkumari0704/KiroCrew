@@ -3552,6 +3552,16 @@ class _ChatSlot:
         "_fallback_slot_model",
         "_model_pick_gen",
         "_fallback_pick_gen",
+        "_refusal_fallback_primary",
+        "_refusal_fallback_candidate",
+        "_refusal_fallback_session_key",
+        "_refusal_retry_text",
+        "_refusal_fallback_attempted",
+        "_refusal_pick_gen",
+        "_refusal_client_pick_epoch",
+        "_refusal_replay_queue_id",
+        "_refusal_replay_stop_gen",
+        "_refusal_replay_session_stop_gen",
         "_posttoken_retry_used",
         "_prestream_exhausted_cycles",
         "_poisoned_reset_used",
@@ -4013,6 +4023,45 @@ class _ChatSlot:
         # snapshotted when the fallback activated.
         self._model_pick_gen: int = 0
         self._fallback_pick_gen: int = 0
+        # Content-filter (refusal) fallback state (agent.refusal_fallback_model).
+        # _refusal_fallback_primary/_refusal_fallback_candidate are the models
+        # to restore/verify at the start of the NEXT genuine turn after a
+        # refusal retry swapped the live session (single-message semantics —
+        # unlike the throttle fallback above, this swap never sticks).
+        # _refusal_retry_text is the replayed message queued by the swap; the
+        # runner matches it at dispatch to tell the retry turn apart from a
+        # genuine new message (and to drop a record whose replay a Stop
+        # purged). _refusal_fallback_attempted is the one-attempt-per-user-
+        # message guard: a refusal from the fallback too is terminal.
+        self._refusal_fallback_primary: str = ""
+        self._refusal_fallback_candidate: str = ""
+        # The session binding the refusal swap ran under, captured ONCE at
+        # swap time. The restore locks on THIS key (not a re-derived one) so
+        # both seams always share one lock domain, and the drain purges the
+        # replay when the live binding differs — a cron result binding an
+        # unbound slot mid-turn must not route the replay onto the newly
+        # bound session.
+        self._refusal_fallback_session_key: str = ""
+        self._refusal_retry_text: str = ""
+        self._refusal_fallback_attempted: bool = False
+        # _model_pick_gen snapshot taken at refusal-swap time: a gen that moved
+        # means an explicit user pick landed after the swap, and the restore
+        # must respect it instead of stomping it with the old primary (same
+        # rule as _fallback_pick_gen on the throttle path).
+        self._refusal_pick_gen: int = 0
+        # Snapshot of the shared CLIENT's explicit-pick epoch at refusal-swap
+        # time: a pick through a session alias moves the client epoch without
+        # touching this slot's generation, and the restore must see it.
+        self._refusal_client_pick_epoch: int = 0
+        # The refusal replay's queue entry id plus stop-generation snapshots
+        # (slot + session) taken at ENQUEUE. The drain compares the live
+        # counters against these: any increment means a Stop landed while the
+        # replay waited, and a pending steer / user-queued follow-up means the
+        # replay was superseded — either way the drain purges the entry instead
+        # of dispatching superseded work ahead of the user's correction.
+        self._refusal_replay_queue_id: str = ""
+        self._refusal_replay_stop_gen: int = 0
+        self._refusal_replay_session_stop_gen: int = 0
         # One-shot guard for the post-token (text-only) transient retry: a turn
         # that has already streamed answer tokens may be re-prompted at most
         # ONCE on a transient 5xx (and only when no tool call fired). Reset on a

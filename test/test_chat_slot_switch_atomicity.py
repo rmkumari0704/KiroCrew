@@ -177,6 +177,64 @@ class TestPrivateChatMemberSwitch:
 
 class TestSlotModelSwitchAtomicity:
     @pytest.mark.asyncio
+    async def test_same_value_pick_during_refusal_fallback_takes_live_path(self):
+        # The pin equals the DISPLAYED primary while a refusal fallback is
+        # serving the wire, so "nothing to switch" is false: the early return
+        # must not be taken, or the pick bumps the generation, the restore
+        # probe drops its record, and the session is stranded on the fallback.
+        # With no live provider the live path lands on the reset — the
+        # observable that the switch actually ran.
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        slot._refusal_fallback_primary = _MODEL_A
+        slot._refusal_fallback_candidate = _MODEL_B
+        state = _mock_state(slot, provider=None)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_A})
+            assert resp.status == 200
+            state.sessions.reset.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_same_value_pick_without_fallback_still_short_circuits(self):
+        # The companion guard: with NO fallback state the same-value pick keeps
+        # its cheap path — generation bump, no reset, no session teardown.
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        gen_before = slot._model_pick_gen
+        state = _mock_state(slot, provider=None)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_A})
+            assert resp.status == 200
+            assert slot._model_pick_gen == gen_before + 1
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_same_value_pick_stamps_the_shared_epoch(self):
+        # The slot-local bump is invisible across aliases: another slot driving
+        # the SAME wire session compares the shared client's epoch at restore
+        # time, so a same-value pick that skips the stamp is silently undone by
+        # that slot's refusal-fallback restore. The short-circuit must stamp
+        # the shared epoch exactly as the live-switch path does.
+        class _EpochClient:
+            def __init__(self):
+                self._explicit_pick_epoch = 0
+
+        inner = _EpochClient()
+        provider = MagicMock()
+        provider.client = inner
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        state = _mock_state(slot, provider=provider)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_A})
+            assert resp.status == 200
+            assert inner._explicit_pick_epoch == 1, (
+                "a same-value pick is still an explicit pick: the shared epoch "
+                "must move so an alias's restore respects it"
+            )
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_mid_turn_switch_answers_409_without_reset(self):
         # _try_live_model_switch declines a mid-turn live switch, and the old
         # unlocked handler then fell through to the reset — tearing down the

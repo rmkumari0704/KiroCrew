@@ -2484,6 +2484,9 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         role_models=coerce_role_models(agent_data.get("role_models")),
         role_efforts=coerce_role_efforts(agent_data.get("role_efforts")),
         fallback_model=coerce_fallback_model(agent_data.get("fallback_model", "auto")),
+        refusal_fallback_model=_sections.coerce_refusal_fallback_model(
+            agent_data.get("refusal_fallback_model", "")
+        ),
         reasoning_effort=agent_data.get("reasoning_effort", ""),
         provider=agent_data.get("provider", "acp"),
         mcp_registry_mode=_safe_bool(agent_data.get("mcp_registry_mode", False), False),
