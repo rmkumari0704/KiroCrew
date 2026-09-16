@@ -12,12 +12,13 @@ import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
   Clock, ChevronLeft, ChevronRight, X, Monitor, Copy, Terminal,
-  Target, Settings2, Star,
+  Target, Settings2, Star, ShieldAlert,
 } from 'lucide-react'
 import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
 import { isNotFoundError } from '../api/apiError'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
+import SessionApprovalModes from '../components/appstore/SessionApprovalModes'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, { APP_EXECUTION_DENIED, isTrustDeniedError, useTrustGate } from '../components/appstore/TrustAppModal'
 import { isRegistrySourced, sanitizeStargazersCount } from '../components/appstore/types'
@@ -115,6 +116,7 @@ interface AppPermissions {
   cron?: boolean
   network?: boolean
   memory?: boolean | string
+  sessionApproval?: boolean
   [key: string]: unknown
 }
 
@@ -593,6 +595,10 @@ export default function AppDetailPage() {
    * the same reason, and both paths this fix wires need to say it.
    */
   const [successMsg, setSuccessMsg] = useState('')
+  // The post-update re-consent notice. Kept apart from `successMsg`: it says the
+  // app is now DISABLED, so it must not wear the green success styling, and it
+  // stays until the user acts instead of clearing on a timer.
+  const [reconsentMsg, setReconsentMsg] = useState('')
   const clearError = useCallback(() => {
     setError('')
   }, [])
@@ -1041,6 +1047,7 @@ export default function AppDetailPage() {
         displayName: app.displayName,
         trustRepository: app.trustRepository,
         origin: app.origin,
+        sessionApproval: app.manifest?.permissions?.sessionApproval === true,
       },
       async () => {
         // ANY unsuccessful retry must REJECT, not resolve. `useTrustGate` rolls the
@@ -1065,12 +1072,19 @@ export default function AppDetailPage() {
       return
     }
     setActionLoading(action)
+    let updateResult: { notice?: string } | undefined
     clearError()
     setSuccessMsg('')
     try {
-      if (action === 'enable') { await runEnable(app.name); return }
+      if (action === 'enable') {
+        // Enabling is the action the re-consent notice asks for, so it also
+        // clears that notice (the consent-modal retry path calls runEnable too).
+        setReconsentMsg('')
+        await runEnable(app.name)
+        return
+      }
       if (action === 'disable') await api.disableApp(app.name)
-      else if (action === 'update') await api.updateApp(app.name)
+      else if (action === 'update') updateResult = await api.updateApp(app.name)
       if (action === 'disable') {
         recordEvent('app_disable', { app: app.name, version: app.installedVersion || app.version })
       }
@@ -1081,10 +1095,18 @@ export default function AppDetailPage() {
       // registry-sourced app from the registry rather than copying a directory, so
       // each case has to name where the update actually came from.
       if (action === 'update') {
-        setSuccessMsg(isRegistrySourced(app)
-          ? i18nT('pages.appsPage.updated_from_the_registry', { name: appDisplayName(app) })
-          : i18nT('pages.appsPage.synced_from_its_source_directory', { name: appDisplayName(app) }))
-        setTimeout(() => setSuccessMsg(''), 4000)
+        // A widened session-approval grant leaves the app DISABLED pending
+        // re-consent (`notice: session_approval_reconsent`). Saying "updated"
+        // alone would report success over an app that just stopped running, so
+        // that case gets its own persistent notice instead of the 4s toast.
+        if (updateResult?.notice === 'session_approval_reconsent') {
+          setReconsentMsg(i18nT('pages.appsPage.updated_needs_session_approval_consent', { name: appDisplayName(app) }))
+        } else {
+          setSuccessMsg(isRegistrySourced(app)
+            ? i18nT('pages.appsPage.updated_from_the_registry', { name: appDisplayName(app) })
+            : i18nT('pages.appsPage.synced_from_its_source_directory', { name: appDisplayName(app) }))
+          setTimeout(() => setSuccessMsg(''), 4000)
+        }
       }
       window.dispatchEvent(new Event('mc:apps-changed'))
     } catch (e: unknown) {
@@ -1098,6 +1120,7 @@ export default function AppDetailPage() {
           displayName: app.displayName,
           trustRepository: app.trustRepository,
           origin: app.origin,
+          sessionApproval: app.manifest?.permissions?.sessionApproval === true,
         })
       } else {
         setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
@@ -1231,6 +1254,20 @@ export default function AppDetailPage() {
         {successMsg && (
           <div className="mb-4 bg-ok/10 border border-ok/20 rounded-lg p-3 animate-rise">
             <span className="text-ok text-sm block">{successMsg}</span>
+          </div>
+        )}
+
+        {/* Re-consent after an update that widened the session-approval grant.
+            Warn-styled like the PR's other session-approval surfaces -- the text
+            says "it is now disabled", so a green box would contradict it. Cleared
+            when the user enables the app again (the action the notice asks for). */}
+        {reconsentMsg && (
+          <div
+            role="status"
+            className="mb-4 flex items-start gap-2 rounded-lg border border-warn/30 bg-warn-subtle p-3 animate-rise"
+          >
+            <ShieldAlert size={14} className="mt-[3px] shrink-0 text-warn" />
+            <span className="text-text text-sm">{reconsentMsg}</span>
           </div>
         )}
 
@@ -1614,6 +1651,24 @@ export default function AppDetailPage() {
                       {(app.manifest.permissions.mcpTools || []).map((t: string) => (
                         <code key={t} className="bg-ok-subtle border border-ok/20 px-1.5 py-0.5 rounded text-[11px] text-ok">{t}</code>
                       ))}
+                    </div>
+                  </div>
+                )}
+                {app.manifest.permissions.sessionApproval && (
+                  <div className="rounded-md border border-warn/30 bg-warn-subtle px-2.5 py-2">
+                    {/* Plain words first: the manifest key alone told a reader nothing
+                        about what the app can do to their sessions. The key stays as
+                        the secondary label so it matches the manifest they may read. */}
+                    <div className="flex items-start gap-2 text-text">
+                      <ShieldAlert size={13} className="mt-[2px] shrink-0 text-warn" />
+                      <span>{i18nT('pages.appDetailPage.session_approval_desc')}</span>
+                    </div>
+                    <SessionApprovalModes
+                      className="mt-1.5 text-[12px]"
+                      label={i18nT('pages.appDetailPage.session_approval_modes')}
+                    />
+                    <div className="mt-1.5 text-[11px] text-muted">
+                      {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>sessionApproval</code>
                     </div>
                   </div>
                 )}

@@ -217,6 +217,8 @@ class TestShellBeforePython:
             request = MagicMock()
             request.match_info = {"name": "test-app"}
             request.app = {"state": MagicMock()}
+            # No app identity: the enable route refuses app tokens outright.
+            request.get = lambda key, default=None: default
 
             await handle_enable_app(request)
 

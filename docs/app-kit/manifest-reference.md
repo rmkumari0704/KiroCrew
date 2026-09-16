@@ -692,6 +692,7 @@ packages at all.
     "cron": true,
     "memory": "app-scoped",
     "network": false,
+    "sessionApproval": false,
     "spawn": false
   }
 }
@@ -706,6 +707,7 @@ packages at all.
 | `permissions.cron` | boolean | Can create cron jobs |
 | `permissions.memory` | string | Memory access: `""` (none), `"app-scoped"`, or `"shared"` |
 | `permissions.network` | boolean | Can make external network requests |
+| `permissions.sessionApproval` | boolean | May approve or deny tool requests and change approval modes for user sessions |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 
 #### `permissions.spawn` — Background Agents
@@ -725,7 +727,23 @@ the platform does not rate-limit spawns per app today.
 API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 `SpawnError`.
 
-> **Advisory today, not enforced in-process.** These fields are **not** a runtime sandbox. The validator functions in `apps/permissions.py` (`validate_permissions`, `format_permissions_summary`) are currently **not wired into the install or runtime path** — they are only exercised by unit tests — so the manifest `permissions` block is neither enforced nor even surfaced today: `mcpTools` is not gated at tool dispatch and an empty `mcpTools` list is treated as unrestricted. What actually confines an app today is the HTTP app-token scope (`permissions.api` allowlist, deny-by-default — see `security.md`) plus the OS sandbox. Install-time path traversal is blocked separately by `_check_path_safety(name)` + `manifest.validate()`, not by the permission validator. Full in-process enforcement is tracked in [rfc-app-sandbox-isolation.md](../request-for-change/rfc-app-sandbox-isolation.md).
+> **Not an in-process sandbox.** Most fields remain advisory for app code loaded
+> inside the gateway. The validator functions in `apps/permissions.py`
+> (`validate_permissions`, `format_permissions_summary`) are still **not wired
+> into the install or runtime path** -- they are only exercised by unit tests, so
+> they carry no `sessionApproval` text. `permissions.sessionApproval` is shown on the app detail
+> page and in the install or enable consent dialog. It is enforced for app-token
+> approval calls, in addition to
+> `permissions.api`. The app must be enabled, and non-YOLO mode changes must name
+> a live slot. An update that newly adds the flag disables the app until the user
+> enables it again from the detail page, which shows why (this re-gate is specific
+> to `sessionApproval`; see issue #11212 for the other live-enforced fields).
+> Official catalog entries mirror this flag so users see it before
+> install even when the store skips fetching the app manifest. Install-time path
+> traversal is blocked separately by
+> `_check_path_safety(name)` plus `manifest.validate()`. Full in-process
+> enforcement is tracked in
+> [rfc-app-sandbox-isolation.md](../request-for-change/rfc-app-sandbox-isolation.md).
 
 ## Setup Hooks
 

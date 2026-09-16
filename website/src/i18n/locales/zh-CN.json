@@ -5625,6 +5625,9 @@
         "capability_backend": "在 {{productName}} 打开期间，在这台电脑上后台持续运行它自己的程序",
         "capability_shell": "在这台电脑上执行命令，命令来自应用自带的、你从未看过的清单",
         "capability_note": "信任该应用会一次性授予以上三项能力，无论它是否全部用到。{{productName}} 无法只授予其中一部分。",
+        "session_approval_heading": "该应用还请求控制你的对话",
+        "session_approval_desc": "批准或拒绝你对话中的工具请求，以及切换对话的审批模式。",
+        "session_approval_modes": "它可以设置的对话审批模式",
         "revocable": "你可以随时在“设置 → 安全 → 受信任的第三方应用”中撤销。撤销后该应用就会停止工作。",
         "source": "发布于",
         "not_reviewed": "{{productName}} 只是收录了这个应用，并未审查它的代码；上面显示的名称也由应用自己提供。",
@@ -8689,6 +8692,9 @@
       "open_screenshot": "打开截图 {{n}}",
       "origin": "安装来源：",
       "permissions": "权限",
+      "session_approval_desc": "可以批准或拒绝你对话中的工具请求，并切换对话的审批模式。",
+      "session_approval_modes": "它可以设置的对话审批模式",
+      "session_approval_manifest_key": "清单键",
       "platform": "平台：",
       "previous": "上一步",
       "removes_kirocrew_metadata_only_the_app_itself_is": "仅移除 {{productName}} 元数据 — 应用本身由外部管理",
@@ -8787,6 +8793,7 @@
       "synced_from_its_source_directory": "已从源目录同步 {{name}}。",
       "updated_app_other": "已更新 {{count}} 个应用。",
       "updated_from_the_registry": "已从注册表更新 {{name}}。",
+      "updated_needs_session_approval_consent": "已更新 {{name}}。它现已被禁用：此版本新增了控制你对话的请求。请在本页查看该权限，然后重新启用。",
       "refresh_store": "刷新商店"
     },
     "artifactDeployPage": {

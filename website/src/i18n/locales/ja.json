@@ -5607,6 +5607,9 @@
         "capability_backend": "{{productName}} が開いている間、このコンピューターのバックグラウンドで独自のプログラムを実行し続けます",
         "capability_shell": "アプリに同梱された、あなたがまだ見ていない一覧から、このコンピューターでコマンドを実行します",
         "capability_note": "アプリを信頼すると、実際にすべてを使うかどうかにかかわらず3つすべてが許可されます。{{productName}} はこれより狭く制限できません。",
+        "session_approval_heading": "このアプリはチャットの制御も要求しています",
+        "session_approval_desc": "あなたのチャットでのツール要求を承認または拒否し、チャットの承認モードを切り替えること。",
+        "session_approval_modes": "設定できるチャットの承認モード",
         "revocable": "設定 → セキュリティ → 信頼済みサードパーティーアプリで、いつでも取り消せます。取り消すとそのアプリは動作を停止します。",
         "source": "公開元",
         "not_reviewed": "{{productName}} はこのアプリを掲載していますが、そのコードをレビューしていません。上記の名前もアプリ自身が申告したものです。",
@@ -8689,6 +8692,9 @@
       "open_screenshot": "スクリーンショット {{n}} を開く",
       "origin": "起源:",
       "permissions": "権限",
+      "session_approval_desc": "あなたのチャットでのツール要求を承認または拒否し、チャットの承認モードを切り替えられます。",
+      "session_approval_modes": "設定できるチャットの承認モード",
+      "session_approval_manifest_key": "マニフェストキー",
       "platform": "プラットフォーム:",
       "previous": "前へ",
       "removes_kirocrew_metadata_only_the_app_itself_is": "{{productName}} メタデータのみを削除します — アプリ自体は外部で管理されます",
@@ -8787,6 +8793,7 @@
       "synced_from_its_source_directory": "{{name}} をソースディレクトリから同期しました。",
       "updated_app_other": "{{count}} アプリを更新しました。",
       "updated_from_the_registry": "{{name}} をレジストリから更新しました。",
+      "updated_needs_session_approval_consent": "{{name}} を更新しました。このバージョンは新たにチャットの制御を要求するため、現在は無効になっています。このページで権限を確認し、再度有効にしてください。",
       "refresh_store": "ストアを更新"
     },
     "artifactDeployPage": {

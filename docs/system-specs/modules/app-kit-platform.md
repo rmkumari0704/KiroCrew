@@ -999,6 +999,20 @@ stale entry serves the previous value while refreshing.
 because iterating a string yields its characters (`"*"` → the wildcard, and
 `"/api/chat"` → the prefix `"/"`, which matches every path).
 
+**User-session approval control is explicit.** App-token calls that approve or
+deny tool requests, or change approval modes, require an enabled app whose live
+manifest declares `permissions.sessionApproval: true`. The route must also be
+allowed by `permissions.api`. All per-session mode changes require an explicit
+live slot; only YOLO is global, and governance can still deny it. Consent is
+captured when the user enables the app, so `update_app` disables an enabled app
+whose new version adds the flag (SEL operation `session_approval_widened`) and
+returns `notice: "session_approval_reconsent"`; the detail page shows that notice
+and the user re-enables the app after seeing the grant. `register_external_app`
+does the same for self-managed apps (a registration that newly declares the flag
+is written disabled, SEL caller `app_register`). This re-gate covers
+`sessionApproval` only; `permissions.api` and `permissions.events` are likewise
+read live and still widen on update without a consent moment (issue #11212).
+
 **Filtering the frame is not always enough.** Two event shapes carry other
 tenants' data inside a payload the gate admits wholesale, so they are narrowed on
 the send path in `_serialize_for_client`: the `slots` re-push (a full slot list)

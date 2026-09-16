@@ -5598,6 +5598,9 @@
         "cancel": "취소",
         "capability_backend": "{{productName}}이(가) 열려 있는 동안 이 컴퓨터의 백그라운드에서 자체 프로그램을 계속 실행합니다",
         "capability_note": "앱을 신뢰하면 실제로 모두 사용하는지와 상관없이 세 가지 모두가 허용됩니다. {{productName}}은(는) 그보다 좁게 제한할 수 없습니다.",
+        "session_approval_heading": "이 앱은 내 채팅을 제어하는 권한도 요청합니다",
+        "session_approval_desc": "내 채팅의 도구 요청을 승인 또는 거부하고, 채팅의 승인 모드를 전환하는 것.",
+        "session_approval_modes": "설정할 수 있는 채팅 승인 모드",
         "capability_python": "{{productName}} 내부에서 자체 코드를 실행하며, {{productName}}와(과) 동일한 권한 — 사용자의 파일, 저장된 자격 증명, 인터넷 — 을 가집니다",
         "capability_shell": "앱에 포함되어 있지만 아직 확인하지 않은 목록에서 이 컴퓨터의 명령을 실행합니다",
         "confirm": "이 앱을 신뢰하고 활성화",
@@ -8689,6 +8692,9 @@
       "open_screenshot": "스크린샷 {{n}} 열기",
       "origin": "출처:",
       "permissions": "권한",
+      "session_approval_desc": "내 채팅의 도구 요청을 승인 또는 거부하고, 채팅의 승인 모드를 전환할 수 있습니다.",
+      "session_approval_modes": "설정할 수 있는 채팅 승인 모드",
+      "session_approval_manifest_key": "매니페스트 키",
       "platform": "플랫폼:",
       "previous": "이전",
       "removes_kirocrew_metadata_only_the_app_itself_is": "{{productName}} 메타데이터만 제거합니다 — 앱 자체는 외부에서 관리됩니다",
@@ -8787,6 +8793,7 @@
       "synced_from_its_source_directory": "{{name}}을(를) 소스 디렉터리에서 동기화했습니다.",
       "updated_app_other": "앱 {{count}}개를 업데이트했습니다.",
       "updated_from_the_registry": "{{name}}을(를) 레지스트리에서 업데이트했습니다.",
+      "updated_needs_session_approval_consent": "{{name}}을(를) 업데이트했습니다. 이 버전은 새로 내 채팅을 제어하는 권한을 요청하므로 지금은 비활성화되어 있습니다. 이 페이지에서 권한을 확인한 뒤 다시 활성화하세요.",
       "refresh_store": "스토어 새로고침"
     },
     "artifactDeployPage": {

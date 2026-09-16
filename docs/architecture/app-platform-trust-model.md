@@ -45,6 +45,36 @@ are **deny-by-default** confined by the dashboard auth middleware
 independently re-checks that the caller's token app matches the target app, since
 the proxy signs requests with the target app's secret.
 
+Approval routes add a second, semantic check. An enabled app must declare
+`permissions.sessionApproval: true` before its app token can approve or deny a
+pending tool request, or change a user session's approval mode. The app still
+needs the matching route in `permissions.api`. Non-YOLO mode changes must name a
+live slot, which prevents one app call from silently widening every user session.
+The global YOLO mode remains subject to the host's approval-mode policy.
+
+The guard reads the live manifest so that removing the flag revokes the grant at
+once. Live-read is not a grant path for this flag: `update_app` compares the old
+and new manifests, and a version that newly declares `sessionApproval` on an
+enabled app comes back disabled with a `session_approval_reconsent` notice that
+the detail page renders in place of its "updated" toast. `register_external_app`
+applies the same comparison to self-managed apps, which author their own
+manifest and re-register on every launch: a registration that newly declares the
+flag (first or later) is written disabled, so a self-managed app cannot grant
+itself session control. Enabling is the consent moment those two gates lean on,
+and `disable_app` leaves the app's token valid, so `handle_enable_app` refuses
+app-token callers outright (`app_token_forbidden`): an app cannot POST its own
+`/api/apps/<name>/enable` to restore a grant the user has not re-consented to.
+
+The consent surface is the **detail page**: the update notice and the Permissions
+card. The trust dialog opens only when repo trust is missing, so re-enabling an
+already-trusted app from a store card shows no dialog. At first install the
+dialog's session row comes from the catalog or registry projection, not from the
+cloned manifest, so a projection that omits the flag under-discloses. Two sibling
+grants are also live-enforced and are not re-gated on update today
+(`permissions.api`, `permissions.events`). A generic widened-permission check
+across install, update and enable, and a structured enable-route refusal that
+drives the dialog, are tracked in issue #11212.
+
 ### WebSocket event scope (CWE-269)
 
 `/api/ws` is a *third* surface reachable with the same app token, and it is scoped

@@ -804,7 +804,13 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 subprocess_executor(), stop_app_backend, name
             )
             await _deregister_app_off_loop(name)
-            if info.get("enabled"):
+            # Live read, not the pre-update ``info`` snapshot: ``update_app`` drops
+            # ``enabled`` when the new version adds ``permissions.sessionApproval``,
+            # and a backend started here would run an app the UI shows as disabled.
+            still_enabled = await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), is_app_enabled, name
+            )
+            if still_enabled:
                 reg_result = await _register_app_off_loop(name)
                 await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
@@ -862,9 +868,15 @@ async def handle_update_app(request: web.Request) -> web.Response:
             )
             return web.json_response(up_result.to_dict(), status=400)
 
-        # Re-register with new manifest if app was enabled
+        # Re-register with the new manifest only if the app is STILL enabled.
+        # ``update_app`` drops ``enabled`` when the new version adds
+        # ``permissions.sessionApproval``, so the pre-update ``info`` snapshot
+        # would start a backend the user has not re-consented to.
         up_reg = None
-        if info.get("enabled"):
+        still_enabled = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), is_app_enabled, name
+        )
+        if still_enabled:
             up_reg = await _register_app_off_loop(name)
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
@@ -1461,6 +1473,31 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     macOS-only app enabled on Linux/Windows would otherwise run a command that
     cannot succeed there.
     """
+    # Dashboard-only. ``_app_owns_path`` grants an app token its own
+    # ``/api/apps/{name}/**`` namespace, and ``disable_app`` only flips
+    # ``enabled`` -- the token stays valid. Enabling is the user's consent
+    # moment: ``app_can_manage_session_approvals`` reads ``enabled`` as the
+    # live grant, and an update that widens the grant leaves the app disabled
+    # precisely so the user re-enables it deliberately. An app that could POST
+    # its own enable route would turn both into a formality, so refuse app
+    # identities outright (mirrors ``handle_uninstall_preview``).
+    if request.get("app"):
+        sel().log_api_access(
+            caller=request.get("app", ""),
+            operation="app_enable_forbidden",
+            outcome="denied",
+            source="app_routes",
+            resources=request.path,
+            error="app token cannot enable an app",
+        )
+        return web.json_response(
+            {
+                "error": "app tokens cannot enable apps",
+                "code": "app_token_forbidden",
+            },
+            status=403,
+        )
+
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
@@ -2002,14 +2039,21 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             )
             return web.json_response(result, status=400)
 
-        # Auto-register resources
-        reg = await _register_app_off_loop(result["name"])
-        # Spawn the backend now so apps with a server are reachable immediately —
-        # without this the backend only starts on the next gateway reboot (via
-        # start_enabled_app_backends), leaving the app's UI with "no reachable
-        # backend" until then. No-op for apps that declare no backend. Run in a
-        # thread because start_app_backend blocks on a health-check poll.
-        await _start_backend_after_install(result["name"])
+        if result.get("notice") == "session_approval_reconsent":
+            # ``install_from_registry`` took the UPDATE path and ``update_app`` left
+            # the app disabled because the new version newly asks for session
+            # control. Registering its resources or starting its backend here would
+            # run an app the user has not re-consented to; the detail page shows why.
+            reg = RegistrationResult()
+        else:
+            # Auto-register resources
+            reg = await _register_app_off_loop(result["name"])
+            # Spawn the backend now so apps with a server are reachable immediately —
+            # without this the backend only starts on the next gateway reboot (via
+            # start_enabled_app_backends), leaving the app's UI with "no reachable
+            # backend" until then. No-op for apps that declare no backend. Run in a
+            # thread because start_app_backend blocks on a health-check poll.
+            await _start_backend_after_install(result["name"])
     result["registration"] = reg.to_dict()
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
@@ -2115,12 +2159,26 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         async with app_lifecycle_lock(name):
             r = await install_from_registry(name, log_lines=streaming_log)
             if r.get("ok") and not r.get("needsClientInstall"):
-                reg = await _register_app_off_loop(r["name"])
-                # Spawn the backend immediately (see handle_registry_install) so
-                # the app is reachable without a gateway reboot. No-op for
-                # backend-less apps.
-                await _start_backend_after_install(r["name"])
-                r["registration"] = reg.to_dict()
+                if r.get("notice") == "session_approval_reconsent":
+                    # ``install_from_registry`` took the UPDATE path and ``update_app``
+                    # left the app disabled because the new version newly asks for
+                    # session control. This is the live path behind the detail page's
+                    # Update button, so it must match its two siblings: stop the
+                    # running backend and scrub the OLD manifest's resources, and
+                    # neither register nor start the new version until the user
+                    # re-enables it.
+                    await asyncio.get_running_loop().run_in_executor(
+                        subprocess_executor(), stop_app_backend, r["name"]
+                    )
+                    await _deregister_app_off_loop(r["name"])
+                    r["registration"] = RegistrationResult().to_dict()
+                else:
+                    reg = await _register_app_off_loop(r["name"])
+                    # Spawn the backend immediately (see handle_registry_install) so
+                    # the app is reachable without a gateway reboot. No-op for
+                    # backend-less apps.
+                    await _start_backend_after_install(r["name"])
+                    r["registration"] = reg.to_dict()
             return r
 
     install_task = asyncio.create_task(_locked_install())

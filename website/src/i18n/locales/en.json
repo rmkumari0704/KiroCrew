@@ -5657,6 +5657,9 @@
       "once_launched_the_app_will_automatically_connect": "Once launched, the app will automatically connect to this {{productName}} instance and appear in Apps.",
       "origin": "Origin:",
       "permissions": "Permissions",
+      "session_approval_desc": "Can approve or deny tool prompts in your chats and switch a chat's approval mode.",
+      "session_approval_modes": "Chat approval modes it can set",
+      "session_approval_manifest_key": "Manifest key",
       "platform": "Platform:",
       "previous": "Previous",
       "removes_kirocrew_metadata_only_the_app_itself_is": "Removes {{productName}} metadata only — the app itself is managed externally",
@@ -5721,6 +5724,7 @@
       "installed_app_find_in_library_and_enable": "Installed {{name}}. Enable it in Library.",
       "synced_from_its_source_directory": "Synced {{name}} from its source directory.",
       "updated_from_the_registry": "Updated {{name}} from the registry.",
+      "updated_needs_session_approval_consent": "Updated {{name}}. It is now disabled: this version newly asks to control your chats. Review the permission on this page, then enable it again.",
       "refresh_store": "Refresh the store"
     },
     "artifactDeployPage": {

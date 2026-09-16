@@ -62,6 +62,7 @@ export function useAppActions({
       trustRepository: installed.trustRepository,
       origin: installed.origin,
       _registry: row?._registry,
+      sessionApproval: installed.manifest.permissions?.sessionApproval === true,
     }
     if (row) return {
       name: row.name,
@@ -69,6 +70,7 @@ export function useAppActions({
       trustRepository: row.trustRepository,
       origin: row.origin,
       _registry: row._registry,
+      sessionApproval: row.manifest?.permissions?.sessionApproval === true,
     }
     return { name }
   }

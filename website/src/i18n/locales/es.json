@@ -5807,6 +5807,9 @@
         "capability_backend": "Mantener un programa propio en marcha en este ordenador, en segundo plano, mientras {{productName}} esté abierto",
         "capability_shell": "Ejecutar comandos en este ordenador, a partir de una lista que la aplicación incluye y que tú no has visto",
         "capability_note": "Confiar en la aplicación concede las tres cosas, las use todas o no. {{productName}} no puede limitarla a menos.",
+        "session_approval_heading": "Esta aplicación también pide controlar tus chats",
+        "session_approval_desc": "Aprobar o rechazar las solicitudes de herramientas en tus chats y cambiar el modo de aprobación de un chat.",
+        "session_approval_modes": "Modos de aprobación del chat que puede establecer",
         "revocable": "Puedes revertirlo en cualquier momento en Ajustes → Seguridad → Aplicaciones de terceros de confianza. La aplicación deja de funcionar cuando lo hagas.",
         "source": "Publicado en",
         "not_reviewed": "{{productName}} incluye esta aplicación en su listado, pero no ha revisado su código, y el nombre de arriba lo proporciona la propia aplicación.",
@@ -8923,6 +8926,9 @@
       "open_screenshot": "Abrir la captura de pantalla {{n}}",
       "origin": "Origen:",
       "permissions": "Permisos",
+      "session_approval_desc": "Puede aprobar o rechazar las solicitudes de herramientas en tus chats y cambiar el modo de aprobación de un chat.",
+      "session_approval_modes": "Modos de aprobación del chat que puede establecer",
+      "session_approval_manifest_key": "Clave del manifiesto",
       "platform": "Plataforma:",
       "previous": "Anterior",
       "removes_kirocrew_metadata_only_the_app_itself_is": "Elimina solo los metadatos de {{productName}} — la app en sí se gestiona externamente",
@@ -9037,6 +9043,7 @@
       "installed_app_find_in_library_and_enable": "{{name}} instalado. Actívalo en la Biblioteca.",
       "synced_from_its_source_directory": "Se sincronizó {{name}} desde su directorio de origen.",
       "updated_from_the_registry": "Se actualizó {{name}} desde el registro.",
+      "updated_needs_session_approval_consent": "Se actualizó {{name}}. Ahora está desactivada: esta versión pide por primera vez controlar tus chats. Revisa el permiso en esta página y actívala de nuevo.",
       "refresh_store": "Actualizar la tienda"
     },
     "artifactDeployPage": {

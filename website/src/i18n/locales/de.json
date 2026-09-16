@@ -5716,6 +5716,9 @@
         "capability_backend": "Ein eigenes Programm auf diesem Computer im Hintergrund laufen lassen, solange {{productName}} geöffnet ist",
         "capability_shell": "Befehle auf diesem Computer ausführen, aus einer Liste, die die App mitliefert und die du nie gesehen hast",
         "capability_note": "Vertrauen gewährt alle drei Rechte, ob die App sie nutzt oder nicht. {{productName}} kann es nicht auf weniger beschränken.",
+        "session_approval_heading": "Diese App bittet außerdem darum, deine Chats zu steuern",
+        "session_approval_desc": "Tool-Anfragen in deinen Chats genehmigen oder ablehnen und den Genehmigungsmodus eines Chats wechseln.",
+        "session_approval_modes": "Chat-Genehmigungsmodi, die sie setzen kann",
         "revocable": "Du kannst das jederzeit unter Einstellungen → Sicherheit → Vertrauenswürdige Apps von Drittanbietern zurücknehmen. Die App funktioniert danach nicht mehr.",
         "source": "Veröffentlicht unter",
         "not_reviewed": "{{productName}} listet diese App, hat ihren Code aber nicht geprüft, und der Name oben stammt von der App selbst.",
@@ -8806,6 +8809,9 @@
       "open_screenshot": "Screenshot {{n}} öffnen",
       "origin": "Ursprung:",
       "permissions": "Berechtigungen",
+      "session_approval_desc": "Kann Tool-Anfragen in deinen Chats genehmigen oder ablehnen und den Genehmigungsmodus eines Chats wechseln.",
+      "session_approval_modes": "Chat-Genehmigungsmodi, die sie setzen kann",
+      "session_approval_manifest_key": "Manifest-Schlüssel",
       "platform": "Plattform:",
       "previous": "Zurück",
       "removes_kirocrew_metadata_only_the_app_itself_is": "Entfernt nur die {{productName}}-Metadaten — die App selbst wird extern verwaltet",
@@ -8912,6 +8918,7 @@
       "installed_app_find_in_library_and_enable": "{{name}} installiert. Aktiviere die App in der Bibliothek.",
       "synced_from_its_source_directory": "{{name}} aus dem Quellverzeichnis synchronisiert.",
       "updated_from_the_registry": "{{name}} aus der Registry aktualisiert.",
+      "updated_needs_session_approval_consent": "{{name}} wurde aktualisiert. Sie ist jetzt deaktiviert: Diese Version bittet neu darum, deine Chats zu steuern. Prüfe die Berechtigung auf dieser Seite und aktiviere sie dann erneut.",
       "refresh_store": "Store aktualisieren"
     },
     "artifactDeployPage": {

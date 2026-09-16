@@ -126,6 +126,7 @@ const THIRD_PARTY = {
   enabled: false,
   origin: 'registry',
   updateAvailable: false,
+  manifest: { permissions: { sessionApproval: true } },
 }
 
 function renderPage() {
@@ -200,6 +201,7 @@ beforeEach(() => {
       manifest: {
         name: THIRD_PARTY.name, version: '1.0.0', displayName: THIRD_PARTY.displayName,
         description: THIRD_PARTY.description, author: THIRD_PARTY.author, repo: THIRD_PARTY.repo,
+        permissions: { sessionApproval: true },
       },
     },
   ])
@@ -262,6 +264,18 @@ describe('LibraryPage trust gate', () => {
     expect(screen.getByText(`${K}.capability_python`)).toBeTruthy()
     expect(screen.getByText(`${K}.capability_backend`)).toBeTruthy()
     expect(screen.getByText(`${K}.capability_shell`)).toBeTruthy()
+    // The session-approval grant sits OUTSIDE the three-row ceiling, in plain
+    // words, with the modes listed under their own label.
+    expect(screen.getByText(`${K}.session_approval_heading`)).toBeTruthy()
+    expect(screen.getByText(`${K}.session_approval_desc`)).toBeTruthy()
+    expect(screen.getByText(`${K}.session_approval_modes`)).toBeTruthy()
+    expect(screen.queryByText('sessionApproval')).toBeNull()
+    expect(screen.getByText('components.approvalModePicker.normal_label')).toBeTruthy()
+    expect(screen.getByText('components.approvalModePicker.normal_desc')).toBeTruthy()
+    expect(screen.getByText('components.approvalModePicker.yolo_desc')).toBeTruthy()
+    expect(screen.getByText('components.approvalModePicker.reads_label')).toBeTruthy()
+    expect(screen.getByText('components.approvalModePicker.trust_label')).toBeTruthy()
+    expect(screen.getByText('components.approvalModePicker.yolo_label')).toBeTruthy()
     expect(screen.getByText(`${K}.source`)).toBeTruthy()
     expect(screen.getByText(THIRD_PARTY.trustRepository)).toBeTruthy()
     expect(screen.queryByText(THIRD_PARTY.repo)).toBeNull()

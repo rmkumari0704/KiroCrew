@@ -297,11 +297,18 @@ class AppResult:
     error: str = ""
     error_code: str = ""  # structured error code for HTTP status mapping
     secret: str = ""
+    #: Machine-readable qualifier on a SUCCESSFUL result -- something the caller
+    #: must show or act on even though the operation went through (an update that
+    #: left the app disabled pending consent). Serialized as ``notice`` so it can
+    #: never be mistaken for the failure ``code``.
+    notice: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"ok": self.ok, "name": self.name}
         if self.message:
             d["message"] = self.message
+        if self.notice:
+            d["notice"] = self.notice
         if self.error:
             d["error"] = self.error
         # `code` is the repo's wire contract for a machine-readable failure
@@ -897,6 +904,17 @@ def update_app(
         )
 
     old_version = existing.version
+    # Consent to session-approval control is captured at install/enable, but the
+    # route guard reads the LIVE manifest. Without this check a routine update
+    # that adds ``permissions.sessionApproval`` would gain control of the user's
+    # sessions with no consent moment. Read the old manifest BEFORE the tree is
+    # replaced; the comparison happens after the copy succeeds.
+    old_manifest = get_app_manifest(name)
+    widened_session_approval = bool(
+        existing.enabled
+        and manifest.permissions.sessionApproval
+        and not (old_manifest and old_manifest.permissions.sessionApproval)
+    )
 
     # Preserve data directory and app secret
     data_dir = dest / "data"
@@ -957,6 +975,10 @@ def update_app(
         version=manifest.version,
         displayName=manifest.displayName,
         updatedAt=_now_iso(),
+        # A widened session-approval grant is a NEW request, not a refresh of the
+        # one the user accepted: the app comes back disabled and the detail page
+        # shows the grant before the user re-enables it.
+        enabled=False if widened_session_approval else existing.enabled,
         source=str(source),
         # A local-source update is a provenance transition, not a refresh of the
         # old registry checkout. Keeping the previous sourceUrl made runtime
@@ -980,6 +1002,24 @@ def update_app(
         manifest.version,
         source,
     )
+    if widened_session_approval:
+        sel().log_api_access(
+            caller="app_update",
+            operation="session_approval_widened",
+            outcome="disabled",
+            resources=f"name={name!r}",
+            error="update added permissions.sessionApproval; re-enable to consent",
+        )
+        return AppResult(
+            ok=True,
+            name=name,
+            message=(
+                f"updated {name} v{old_version} -> v{manifest.version}; "
+                "disabled because this version newly requests session approval "
+                "control -- review it on the app page and enable again"
+            ),
+            notice="session_approval_reconsent",
+        )
     return AppResult(
         ok=True,
         name=name,
@@ -2308,11 +2348,30 @@ def register_external_app(
             ),
         )
 
+    # Self-registration is routine (self-managed apps re-register on every
+    # launch) and the app authors its own manifest, so this path can widen the
+    # session-approval grant without any user moment -- the same gap
+    # ``update_app`` closes with ``widened_session_approval``. Compare against the
+    # manifest that was consented to (the persisted one; none for a first
+    # registration) and, if the grant is new, register the app DISABLED so the
+    # user sees it on the detail page and enables it deliberately.
+    requested_session_approval = bool(
+        isinstance(manifest_data, dict)
+        and isinstance(manifest_data.get("permissions"), dict)
+        and manifest_data["permissions"].get("sessionApproval") is True
+    )
+    prior_manifest = get_app_manifest(name) if existing else None
+    widened_session_approval = requested_session_approval and not (
+        prior_manifest and prior_manifest.permissions.sessionApproval
+    )
+
     if existing:
         # Update existing registration
         existing.version = version
         existing.displayName = display_name
         existing.updatedAt = _now_iso()
+        if widened_session_approval:
+            existing.enabled = False
         if not preserve_server_provenance:
             if source:
                 existing.source = source
@@ -2331,7 +2390,10 @@ def register_external_app(
             name=name,
             version=version,
             displayName=display_name,
-            enabled=True,  # self-managed apps are always "enabled"
+            # Self-managed apps are "enabled" by default; a manifest that asks for
+            # session control is the one exception, since that grant needs a
+            # consent moment the self-registration path cannot provide.
+            enabled=not widened_session_approval,
             installedAt=_now_iso(),
             source=source,
             sourceUrl=requested_repository,
@@ -2370,6 +2432,25 @@ def register_external_app(
         resources,
         lifecycle,
     )
+    if widened_session_approval:
+        sel().log_api_access(
+            caller="app_register",
+            operation="session_approval_widened",
+            outcome="disabled",
+            resources=f"name={name!r}",
+            error="registration added permissions.sessionApproval; re-enable to consent",
+        )
+        return AppResult(
+            ok=True,
+            name=name,
+            message=(
+                f"{action} {name} v{version}; disabled because this manifest newly "
+                "requests session approval control -- review it on the app page and "
+                "enable it"
+            ),
+            secret=secret if is_new_secret else "",
+            notice="session_approval_reconsent",
+        )
     result = AppResult(
         ok=True,
         name=name,

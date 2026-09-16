@@ -35,6 +35,7 @@ from conftest import requires_symlinks
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
     AppResult,
+    disable_app,
     enable_app,
     install_app,
     register_external_app,
@@ -1259,6 +1260,48 @@ class TestUpdateApp:
         assert calls == ["stop", "deregister", "start"]
 
     @pytest.mark.asyncio
+    async def test_registry_update_that_widens_session_approval_does_not_restart(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # ``update_app`` drops ``enabled`` when the new version newly asks for
+        # session control. The route must read THAT state, not its pre-update
+        # snapshot, or it registers resources and starts a backend for an app the
+        # user has not re-consented to.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+
+        async def _reconsent_install(name: str, **kwargs: Any) -> dict[str, Any]:
+            disable_app(name)  # what update_app does on a widened grant
+            return {"ok": True, "name": name, "notice": "session_approval_reconsent"}
+
+        monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
+        monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
+        monkeypatch.setattr(routes_mod, "install_from_registry", _reconsent_install)
+        monkeypatch.setattr(
+            routes_mod, "deregister_app", lambda n: calls.append("deregister")
+        )
+        monkeypatch.setattr(
+            routes_mod, "register_app", lambda n: calls.append("register")
+        )
+        monkeypatch.setattr(
+            routes_mod, "stop_app_backend", lambda n: calls.append("stop")
+        )
+        monkeypatch.setattr(
+            routes_mod, "start_app_backend", lambda n: calls.append("start")
+        )
+
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(f"/api/apps/{APP}/update", json={})
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["ok"] is True
+        assert data["notice"] == "session_approval_reconsent"
+        assert "registration" not in data
+        assert calls == ["stop", "deregister"]
+
+    @pytest.mark.asyncio
     async def test_local_update_failure_restores_registration(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1631,6 +1674,43 @@ class TestUninstallRefusals:
 # ---------------------------------------------------------------------------
 # Enable / disable warning + rollback branches
 # ---------------------------------------------------------------------------
+
+
+class TestEnableRefusesAppTokens:
+    """Enabling is the consent moment for ``permissions.sessionApproval``.
+
+    ``disable_app`` leaves the app's token valid and ``_app_owns_path`` grants
+    the token its own ``/api/apps/{name}/**`` namespace, so without a refusal
+    a disabled app -- including one an update left disabled because it newly
+    asked for session control -- could POST its own enable route and restore
+    the grant with no user moment.
+    """
+
+    @pytest.mark.asyncio
+    async def test_own_app_token_cannot_enable_itself(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, permissions={"sessionApproval": True})
+        assert disable_app(APP).ok
+        async with TestClient(TestServer(_make_app(app_identity=APP))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable")
+            assert resp.status == 403
+            assert (await resp.json())["code"] == "app_token_forbidden"
+        assert routes_mod.get_app(APP)["enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_dashboard_caller_still_enables(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, permissions={"sessionApproval": True})
+        assert disable_app(APP).ok
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable")
+            assert resp.status == 200
+        assert routes_mod.get_app(APP)["enabled"] is True
 
 
 class TestEnableBranches:
@@ -2215,6 +2295,45 @@ class TestRegistryInstallStream:
         done = json.loads(payload)
         assert done["ok"] is True
         assert "registration" in done
+
+    @pytest.mark.asyncio
+    async def test_streaming_update_that_widens_session_approval_stops_the_app(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The detail page's Update button goes through this SSE route. When the
+        # re-clone takes the update path and ``update_app`` leaves the app
+        # disabled pending re-consent, the route must behave like its two
+        # siblings: stop and scrub the OLD version, and neither register nor
+        # start the new one.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        enable_app(APP)
+        calls: list[str] = []
+
+        async def _reconsent(name: str, log_lines: Any = None, **kw: Any) -> dict:
+            disable_app(name)  # what update_app does on a widened grant
+            return {"ok": True, "name": name, "notice": "session_approval_reconsent"}
+
+        monkeypatch.setattr(routes_mod, "install_from_registry", _reconsent)
+        monkeypatch.setattr(routes_mod, "register_app", lambda n: calls.append("register"))
+        monkeypatch.setattr(
+            routes_mod, "deregister_app", lambda n: calls.append("deregister")
+        )
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: calls.append("stop"))
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: calls.append("start"))
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post(
+                "/api/apps/registry/install-stream", json={"name": APP}
+            )
+            assert resp.status == 200
+            events = _sse_events(await resp.text())
+        name, payload = events[-1]
+        assert name == "done"
+        done = json.loads(payload)
+        assert done["ok"] is True
+        assert done["notice"] == "session_approval_reconsent"
+        assert done["registration"]["agents"] == []
+        assert calls == ["stop", "deregister"]
 
     @pytest.mark.asyncio
     async def test_failed_install_reports_done_with_error(

@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
 from kiro_crew.apps.manifest import AppManifest
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,28 @@ def check_tool_permission(app_name: str, tool_name: str, manifest: AppManifest) 
     if not manifest.permissions.mcpTools:
         return True  # no restrictions declared
     return tool_name in manifest.permissions.mcpTools
+
+
+def app_can_manage_session_approvals(app_name: str) -> bool:
+    """Return whether an enabled app currently holds the session approval grant.
+
+    Read the live manifest on every decision. App tokens can outlive an enable
+    cycle, so a cached grant must not survive a disable or manifest edit.
+    """
+    if not app_name:
+        return False
+    try:
+        if not is_app_enabled(app_name):
+            return False
+        manifest = get_app_manifest(app_name)
+        return bool(manifest and manifest.permissions.sessionApproval)
+    except Exception:
+        logger.warning(
+            "Could not resolve session approval permission for app %s",
+            app_name,
+            exc_info=True,
+        )
+        return False
 
 
 def format_permissions_summary(manifest: AppManifest) -> str:

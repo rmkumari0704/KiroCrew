@@ -63,6 +63,8 @@ class TestEnableDepsResolution:
             request = MagicMock()
             request.match_info = {"name": "test-app"}
             request.app = {"state": MagicMock()}
+            # No app identity: the enable route refuses app tokens outright.
+            request.get = lambda key, default=None: default
 
             response = await handle_enable_app(request)
 
@@ -105,6 +107,8 @@ class TestEnableDepsResolution:
             request = MagicMock()
             request.match_info = {"name": "simple-app"}
             request.app = {"state": MagicMock()}
+            # No app identity: the enable route refuses app tokens outright.
+            request.get = lambda key, default=None: default
 
             await handle_enable_app(request)
 
@@ -152,6 +156,8 @@ class TestEnableDepsResolution:
             request = MagicMock()
             request.match_info = {"name": "partial-app"}
             request.app = {"state": MagicMock()}
+            # No app identity: the enable route refuses app tokens outright.
+            request.get = lambda key, default=None: default
 
             response = await handle_enable_app(request)
 
@@ -208,6 +214,8 @@ class TestEnableDepsResolution:
             request = MagicMock()
             request.match_info = {"name": "ordered-app"}
             request.app = {"state": MagicMock()}
+            # No app identity: the enable route refuses app tokens outright.
+            request.get = lambda key, default=None: default
 
             await handle_enable_app(request)
 
@@ -266,6 +274,8 @@ class TestClientInstallOnEnableIsAdvisory:
             request = MagicMock()
             request.match_info = {"name": "crew-companion"}
             request.app = {"state": MagicMock()}
+            # No app identity: the enable route refuses app tokens outright.
+            request.get = lambda key, default=None: default
 
             response = await handle_enable_app(request)
 
@@ -301,6 +311,8 @@ class TestClientInstallOnEnableIsAdvisory:
             request = MagicMock()
             request.match_info = {"name": "crew-companion"}
             request.app = {"state": MagicMock()}
+            # No app identity: the enable route refuses app tokens outright.
+            request.get = lambda key, default=None: default
 
             response = await handle_enable_app(request)
 
@@ -371,6 +383,8 @@ class TestClientInstallOnEnableIsAdvisory:
             request = MagicMock()
             request.match_info = {"name": "server-app"}
             request.app = {"state": MagicMock()}
+            # No app identity: the enable route refuses app tokens outright.
+            request.get = lambda key, default=None: default
 
             response = await handle_enable_app(request)
 

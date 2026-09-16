@@ -28,6 +28,7 @@ from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_of
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.apps import permissions as app_permissions
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -8798,6 +8799,35 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
     return None
 
 
+async def deny_session_approval_caller(request: web.Request, operation: str) -> web.Response | None:
+    """Allow the dashboard owner or an app with the live session approval grant."""
+    if request.get("internal_auth") is True:
+        return None
+    request_app = str(request.get("app") or "")
+    if not request_app:
+        return deny_non_dashboard_caller(request, operation)
+
+    if await asyncio.to_thread(app_permissions.app_can_manage_session_approvals, request_app):
+        return None
+    try:
+        sel().log_api_access(
+            caller=request_app,
+            operation=operation,
+            outcome="denied",
+            source="app_isolation",
+            error="session approval permission not granted",
+        )
+    except Exception:  # pragma: no cover - audit is best-effort
+        logger.debug("SEL audit failed for %s denial", operation, exc_info=True)
+    return web.json_response(
+        {
+            "error": "app cannot manage session approvals",
+            "code": "session_approval_not_granted",
+        },
+        status=403,
+    )
+
+
 async def api_chat_slot_followup(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/followup — show an agent-authored follow-up card.
 
@@ -10120,10 +10150,11 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
 
 
 async def api_chat_mode(request: web.Request) -> web.Response:
-    """POST /api/chat/mode — set global tool approval mode.
+    """POST /api/chat/mode — set tool approval mode.
 
     Modes:
       - ``normal``: reset to interactive (ask for each tool)
+      - ``trust_reads``: auto-approve reads for active slot
       - ``trust``: auto-approve tools for active slot
       - ``yolo``: auto-approve all tools everywhere
 
@@ -10131,9 +10162,18 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     pending approval — it preemptively sets the mode for future tools.
     """
     state: DashboardState = request.app["state"]
-    denied = deny_non_dashboard_caller(request, "chat_mode")
+    denied = await deny_session_approval_caller(request, "chat_mode")
     if denied is not None:
         return denied
+    request_app = str(request.get("app") or "")
+
+    def audit_caller(dashboard_label: str) -> str:
+        """App tokens are attributed to the app; dashboard callers keep their
+        original per-site labels (slot, background, mode) so SEL history stays
+        comparable across releases."""
+        return f"app:{request_app}" if request_app else dashboard_label
+
+    override_source = f"app:{request_app}" if request_app else "dashboard"
     body, body_err = await read_bounded_json(request)
     if body_err is not None:
         return body_err
@@ -10157,20 +10197,32 @@ async def api_chat_mode(request: web.Request) -> web.Response:
     if mode == "yolo":
         if not yolo_policy_permits():
             return _deny_approval_mode(
-                caller="dashboard:chat_mode",
+                caller=audit_caller("dashboard:chat_mode"),
                 operation=f"chat_mode:{mode}",
                 mode=mode,
                 resource=str(body.get("slot") or ""),
             )
     elif not await asyncio.to_thread(approval_mode_permitted, mode):
         return _deny_approval_mode(
-            caller="dashboard:chat_mode",
+            caller=audit_caller("dashboard:chat_mode"),
             operation=f"chat_mode:{mode}",
             mode=mode,
             resource=str(body.get("slot") or ""),
         )
     raw_slot = body.get("slot")
     slot_key = raw_slot or None
+    # Test the NORMALIZED value: ``""`` (and any other falsy slot) collapses to
+    # ``None`` below, which is the all-slots path -- so an app sending an empty
+    # string must be refused exactly like one sending no slot at all.
+    if request_app and mode != "yolo" and slot_key is None:
+        return web.json_response(
+            {
+                "ok": False,
+                "error": "app mode changes require a slot",
+                "code": "slot_required",
+            },
+            status=400,
+        )
 
     # Refuse an unresolvable slot key BEFORE anything mutates: a slot-scoped
     # request that names a slot which does not exist — or which is not a string
@@ -10219,10 +10271,10 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         # sibling activate() — never run on the gateway loop. Safe after
         # the resolution above: every branch mutates the captured slot, never
         # re-indexing state._slots.
-        await asyncio.to_thread(safety_override().deactivate, "dashboard")
+        await asyncio.to_thread(safety_override().deactivate, override_source)
 
     if mode == "yolo":
-        result = await asyncio.to_thread(safety_override().activate, "dashboard")
+        result = await asyncio.to_thread(safety_override().activate, override_source)
         if not result.active:
             # Arming can be refused for two reasons and the client needs to tell
             # them apart: an ``approval_modes`` deny of ``yolo`` is a permanent
@@ -10230,7 +10282,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             # while anything else is a transient activation failure (503).
             if not yolo_policy_permits():
                 return _deny_approval_mode(
-                    caller="dashboard:chat_mode",
+                    caller=audit_caller("dashboard:chat_mode"),
                     operation="mode_change:yolo",
                     mode="yolo",
                     resource=slot_key or "",
@@ -10241,7 +10293,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             )
         try:
             sel().log_api_access(
-                caller="dashboard:mode",
+                caller=audit_caller("dashboard:mode"),
                 operation="mode_change:yolo",
                 outcome="enabled",
                 resources=",".join(s.key for s in state._slots.values()),
@@ -10260,7 +10312,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                 state.sessions.set_approval_policy(effective_session_key(s), "")
         try:
             sel().log_api_access(
-                caller="dashboard:mode",
+                caller=audit_caller("dashboard:mode"),
                 operation="mode_change:trust_reads",
                 outcome="enabled",
                 resources=slot_key or ",".join(s.key for s in state._slots.values()),
@@ -10298,7 +10350,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             if _trusted_chs:
                 _res += "|channels:" + ",".join(_trusted_chs)
             sel().log_api_access(
-                caller="dashboard:mode",
+                caller=audit_caller("dashboard:mode"),
                 operation="mode_change:trust",
                 outcome="enabled",
                 resources=_res,
@@ -10335,7 +10387,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                     ch._save()
         try:
             sel().log_api_access(
-                caller="dashboard:mode",
+                caller=audit_caller("dashboard:mode"),
                 operation="mode_change:normal",
                 outcome="disabled",
                 resources=slot_key or ",".join(s.key for s in state._slots.values()),
@@ -10375,7 +10427,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                     )
                     try:
                         sel().log_api_access(
-                            caller=f"dashboard:{_slot.key}",
+                            caller=audit_caller(f"dashboard:{_slot.key}"),
                             operation=f"tool_approval:bulk_{mode}",
                             outcome="approved",
                             resources=aid,
@@ -10393,7 +10445,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                     state.resolve_approval(aid, True)
                     try:
                         sel().log_api_access(
-                            caller="dashboard:background",
+                            caller=audit_caller("dashboard:background"),
                             operation=f"tool_approval:bulk_{mode}",
                             outcome="approved",
                             resources=aid,
@@ -10518,9 +10570,11 @@ def _deny_trust_pattern(name: str, request_id: str, action: str, code: str) -> w
 async def api_chat_slot_approve(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/approve — resolve a pending tool approval."""
     state: DashboardState = request.app["state"]
-    denied = deny_non_dashboard_caller(request, "chat_slot_approve")
+    denied = await deny_session_approval_caller(request, "chat_slot_approve")
     if denied is not None:
         return denied
+    request_app = str(request.get("app") or "")
+    override_source = f"app:{request_app}" if request_app else "dashboard"
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
@@ -10645,7 +10699,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         action = "approved"
     # YOLO: auto-approve all tools globally (all slots)
     elif action == "yolo":
-        result = await asyncio.to_thread(safety_override().activate, "dashboard")
+        result = await asyncio.to_thread(safety_override().activate, override_source)
         if not result.active:
             # Same two-reason split as ``api_chat_mode``: an ``approval_modes``
             # deny of ``yolo`` is a permanent policy answer the client can render
