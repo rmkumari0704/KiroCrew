@@ -3319,6 +3319,17 @@ function ChatSidebar({
   // ErrorNotice cluster so the revert (below) never happens silently.
   const [renameError, setRenameError] = useState('')
   const cancelRenameRef = useRef(false)
+  // Per-slot rename recovery state, keyed by slot. `gen` is a monotonic attempt
+  // counter: a refused rename's delayed recovery may apply ONLY while its own
+  // generation is still the latest (`rec.gen === myGen`). This defeats the
+  // refuse-X -> rename-back-to-X-succeeds race, where a stale recovery of the
+  // first attempt would otherwise restore the old server title over the newer
+  // accepted one. `inflight` tracks the values still awaiting a server answer so
+  // the entry is only dropped once the last one settles. Mirrors the proven
+  // ChatPage inline-rename recovery (renameRecoveryRef there).
+  const renameRecoveryRef = useRef(
+    new Map<string, { baseline: string; inflight: Set<string>; gen: number }>()
+  )
   const renameInputRef = useRef<HTMLTextAreaElement | null>(null)
   // The rename field is a wrapping, auto-growing <textarea> (not a single-line
   // <input>) so a long session title is fully visible while editing instead of
@@ -3355,6 +3366,21 @@ function ChatSidebar({
   const onRenameCommit = useCallback((key: string, value: string) => {
     if (!cancelRenameRef.current && value.trim()) {
       const refused = value.trim()
+      // Take a generation for THIS attempt before any async work. A later
+      // rename on the same slot bumps `rec.gen`, so a delayed recovery of an
+      // earlier attempt sees `rec.gen !== myGen` and yields -- this is what
+      // defeats the refuse-X -> rename-back-to-X race, where reverting the
+      // first attempt's server title would otherwise stomp the newer accepted
+      // one even though the store title equals `refused` in both.
+      const rec = renameRecoveryRef.current.get(key) ?? { baseline: '', inflight: new Set<string>(), gen: 0 }
+      rec.inflight.add(refused)
+      rec.gen++
+      const myGen = rec.gen
+      renameRecoveryRef.current.set(key, rec)
+      const settle = () => {
+        rec.inflight.delete(refused)
+        if (rec.inflight.size === 0 && rec.gen === myGen) renameRecoveryRef.current.delete(key)
+      }
       dispatch(sseSlotTitle({ key, title: refused }))
       // Recovery on a refused rename must go through Redux: slot titles live in
       // the dashboard slice (written by `sseSlots` / `fetchSlots.fulfilled`),
@@ -3368,23 +3394,23 @@ function ChatSidebar({
       // read was in flight (crash-data-loss anchor). We fetch the server list,
       // take only this slot's server title, and write it back via `sseSlotTitle`.
       //
-      // The write is a compare-and-set: only revert while the store title is
-      // STILL the refused optimistic value. If an authoritative frame
-      // (`sseSlots` / `sseSlotTitle`) has since changed this slot's title, the
-      // equality breaks and we yield to that newer truth instead of stomping it.
-      // The refused value is the exact string this handler wrote, so any newer
-      // frame carries a different string; the only false match is the server
-      // independently renaming to the identical string, which is cosmetically
-      // the same result. Mirrors the proven ChatPage inline-rename recovery.
-      api.renameSlot(key, refused).catch(async e => {
+      // The write is a compare-and-set gated on BOTH the generation and the
+      // store title: recover only while this attempt is still the latest
+      // (`rec.gen === myGen`) AND the store title is STILL the refused
+      // optimistic value. If a newer rename bumped the generation, or an
+      // authoritative frame (`sseSlots` / `sseSlotTitle`) changed this slot's
+      // title, we yield to that newer truth instead of stomping it. Mirrors the
+      // proven ChatPage inline-rename recovery.
+      const mayRecover = () =>
+        rec.gen === myGen &&
+        store.getState().dashboard.slots.find(s => s.key === key)?.title === refused
+      api.renameSlot(key, refused).then(() => settle(), async e => {
         setRenameError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))
-        const stillRefused = () =>
-          store.getState().dashboard.slots.find(s => s.key === key)?.title === refused
         try {
           const server = (await queryClient.fetchQuery({
             queryKey: ['chat-slots'], queryFn: () => api.chatSlots(), staleTime: 0, gcTime: 0,
           })).find((s: { key: string; title?: string }) => s.key === key)
-          if (server?.title !== undefined && stillRefused()) {
+          if (server?.title !== undefined && mayRecover()) {
             dispatch(sseSlotTitle({ key, title: server.title }))
           }
         } catch {
@@ -3392,6 +3418,8 @@ function ChatSidebar({
           // optimistic title in place rather than guessing; the failure is
           // already surfaced via ErrorNotice, and the next authoritative frame
           // reconciles it. See the transport-failure note in the PR body.
+        } finally {
+          settle()
         }
       })
     }
@@ -3872,8 +3900,15 @@ function ChatSidebar({
       // The sidebar reads slot.model from the Redux dashboard slice; no React
       // Query is registered on ['chat-slots'], so invalidating it was a no-op
       // and the switched models only refreshed on the next 5s sseSlots push.
-      // fetchSlots() re-reads the server truth now.
-      dispatch(fetchSlots())
+      // fetchSlots() re-reads the server truth now. Unwrap it and surface a
+      // failed refresh on the board-level notice (not the panel-scoped
+      // bulkModelError, which vanishes when the panel closes below): the switch
+      // already succeeded server-side, but a silent refresh failure would leave
+      // a stale model on screen with no notice (errors-use-error-notice). The
+      // next 5s sseSlots frame still reconciles.
+      dispatch(fetchSlots()).unwrap().catch(() => {
+        setBoardError(i18nT('pages.chatSidebar.switch_failed'))
+      })
       // Partial failure: the endpoint returns 200 with a non-empty `failed`
       // list when some slots' resets raised. Surface it and keep the panel
       // open instead of silently closing on a partial success.
@@ -4477,8 +4512,15 @@ function ChatSidebar({
     // Board lanes filter by slot.tags from the Redux dashboard slice; the drop
     // changes tag membership. ['chat-slots'] has no registered query, so the
     // invalidate was a no-op and the moved row only landed in its new lane on
-    // the next sseSlots push. fetchSlots() re-reads slot.tags now.
-    onSuccess: () => dispatch(fetchSlots()),
+    // the next sseSlots push. fetchSlots() re-reads slot.tags now; unwrap it so
+    // a failed refresh surfaces on the board notice instead of silently leaving
+    // the row in its old lane (errors-use-error-notice). The next 5s sseSlots
+    // frame still reconciles.
+    onSuccess: () => {
+      dispatch(fetchSlots()).unwrap().catch(() => {
+        setBoardError(i18nT('components.errorBoundary.something_went_wrong'))
+      })
+    },
     onError: (e) => setBoardError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
   /** Lanes the board does not have yet. Drives the seeding write and the menu

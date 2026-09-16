@@ -264,4 +264,66 @@ describe('sidebar rename failure recovery (#10151)', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
     expect(titleInStore(store)).toBe(NEWER_TITLE)
   })
+
+  // Generation guard (GPT F1): the refuse-X -> rename-back-to-X-succeeds race.
+  // A first rename to X is refused; its recovery read is still in flight when a
+  // SECOND rename to the same string X is committed and SUCCEEDS. The store
+  // title equals the refused value X in both attempts, so the title-only
+  // compare-and-set would FALSELY match and restore the first attempt's stale
+  // server title over the newer accepted one. Only the per-slot generation
+  // counter (rec.gen !== myGen once the second attempt bumps it) catches this.
+  // Removing the generation guard reddens this test.
+  it('does not let a stale earlier recovery stomp a later identical rename', async () => {
+    const X = 'Same Title X'
+    // First rename rejects; second (identical) resolves.
+    renameSlotMock
+      .mockRejectedValueOnce(new Error('rename refused'))
+      .mockResolvedValueOnce({})
+    // Hold the first recovery read open so the second rename lands first.
+    let resolveChatSlots: (v: unknown) => void = () => {}
+    chatSlotsMock.mockImplementation(() => new Promise(res => { resolveChatSlots = res }))
+
+    const { store, container } = renderSidebar()
+
+    // Attempt 1: commit X, server refuses, recovery read issued (and parked).
+    commitRename(container, X)
+    expect(titleInStore(store)).toBe(X)
+    await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(1, SLOT_KEY, X))
+    await waitFor(() => expect(chatSlotsMock).toHaveBeenCalled())
+
+    // Attempt 2: commit the SAME string X again; this one succeeds. It bumps
+    // the slot's rename generation, so attempt 1's parked recovery is now stale.
+    commitRename(container, X)
+    await waitFor(() => expect(renameSlotMock).toHaveBeenNthCalledWith(2, SLOT_KEY, X))
+
+    // Now the first attempt's stale recovery read resolves with an OLD server
+    // title. The generation guard must reject it: the store keeps X.
+    resolveChatSlots([{ key: SLOT_KEY, title: SERVER_TITLE }])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(titleInStore(store)).toBe(X)
+  })
+
+  // Both-reject / transport-down (bolichen97 review item): when renameSlot AND
+  // the recovery chatSlots read BOTH reject -- e.g. the gateway is unreachable
+  // -- there is no authoritative server truth to revert to. The optimistic
+  // title deliberately STAYS (guessing a revert value while offline would
+  // assert an authority we do not have; the failure is already visible via
+  // ErrorNotice, and the next live frame reconciles it). This pins that
+  // deliberate behaviour rather than a rollback.
+  it('keeps the optimistic title and shows the notice when the recovery read also fails', async () => {
+    renameSlotMock.mockRejectedValue(new Error('rename refused'))
+    chatSlotsMock.mockRejectedValue(new Error('gateway unreachable'))
+    const { store, container } = renderSidebar()
+
+    commitRename(container, 'Optimistic Draft')
+    expect(titleInStore(store)).toBe('Optimistic Draft')
+
+    // Recovery read is attempted and also fails.
+    await waitFor(() => expect(chatSlotsMock).toHaveBeenCalled())
+    // The failure is surfaced through ErrorNotice...
+    await waitFor(() => expect(container.querySelector('[data-testid="rename-error"]')).toBeTruthy())
+    // ...and the optimistic title is deliberately left in place (no guess).
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(titleInStore(store)).toBe('Optimistic Draft')
+  })
 })
