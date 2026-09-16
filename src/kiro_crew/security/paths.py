@@ -385,6 +385,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     "trust",
     "member-memory-bindings",
     "security_events.jsonl",
+    # Authenticated SEL retention-floor metadata. The OS sandbox exposes this
+    # top-level directory read-only so direct open() cannot lower the floor;
+    # the shared file gate hides it as defense in depth.
+    "security_events.meta",
     # Rotated SEL segments. sel.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records
     # the live file does and must be gated identically — a rotated log that the

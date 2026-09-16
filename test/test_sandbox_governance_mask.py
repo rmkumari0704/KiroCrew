@@ -293,6 +293,14 @@ class TestTheReconciliationIsComplete:
         assert "playwright-cli" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
         assert "tools/playwright-cli" not in sandbox._CREW_READONLY_LEAVES
 
+    def test_sel_retention_metadata_is_a_live_readonly_directory(self) -> None:
+        leaf = "security_events.meta"
+        assert leaf in sandbox._CREW_READONLY_LEAVES
+        assert leaf in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+        assert leaf in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert leaf not in sandbox._CREW_SANDBOX_VISIBLE_LEAVES
+        assert f"{leaf}/retention_floor.json" not in sandbox._CREW_READONLY_LEAVES
+
     @pytest.mark.parametrize("mode", _MODES)
     def test_every_mode_carries_the_derived_set(self, mode: str) -> None:
         """The governance tree is masked at every level, the way ``.vault`` already is.

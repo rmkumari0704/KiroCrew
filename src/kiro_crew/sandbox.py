@@ -401,6 +401,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
 #: read-only rather than hidden — see the READONLY note above for why hiding a
 #: ceiling inverts its effect.
 _CREW_READONLY_LEAVES: tuple[str, ...] = (
+    # SEL's process-shared deletion floor. The directory bind is deliberate:
+    # trusted host writers publish the child marker via atomic rename, and a
+    # directory bind exposes that replacement to long-lived sandboxes while
+    # denying their direct open()/rename/unlink writes at the OS boundary.
+    "security_events.meta",
     # Durable member identity must be readable to sandboxed cron metadata
     # lookup, but never writable by an agent shell. A top-level directory is
     # required: the writable trust parent could be renamed around a child seal.
@@ -891,11 +896,19 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "profiles",
     "member-memory-bindings",
     "playwright-cli",
+    # Empty means no authenticated floor, so deletion fails closed. A DIRECTORY
+    # bind sees a trusted writer's later atomic marker replacement without
+    # granting sandboxed writers access to the directory.
+    "security_events.meta",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
-#: replaceable, which would let an agent choose the executable the gateway runs.
-_CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = ("playwright-cli",)
+#: replaceable, which would let an agent choose the executable or retention floor
+#: the gateway later trusts.
+_CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
+    "playwright-cli",
+    "security_events.meta",
+)
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",

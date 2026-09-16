@@ -4447,6 +4447,11 @@ class TestIsSensitivePath:
         assert is_sensitive_path("~/.kiro/crew/security_events.jsonl") is True
         assert is_sensitive_path("~/.kirocrew/security_events.jsonl") is True
 
+    def test_security_events_retention_metadata(self) -> None:
+        assert is_sensitive_path("~/.kiro/crew/security_events.meta") is True
+        assert is_sensitive_path("~/.kiro/crew/security_events.meta/retention_floor.json") is True
+        assert is_sensitive_path("~/.kirocrew/security_events.meta") is True
+
     def test_rotated_security_event_segments(self) -> None:
         # A rotated segment holds exactly the same audit records the live log
         # does (sel.py closes the log at a size cap and renames it into this
