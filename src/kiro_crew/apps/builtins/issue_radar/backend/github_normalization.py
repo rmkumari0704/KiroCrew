@@ -9,6 +9,9 @@ from datetime import datetime
 from typing import Any
 
 MEMBER_ASSOC_RANK = {"OWNER": 3, "MEMBER": 2, "COLLABORATOR": 1}
+
+# GitHub conclusion / state -> coarse bucket. Anything unrecognized is treated as
+# "other" (informational), never silently as success.
 CHECK_FAILURE_CONCLUSIONS = {
     "failure",
     "timed_out",
@@ -26,10 +29,22 @@ CHECK_RUNNING_STATES = {
     "expected",
 }
 CHECK_OTHER_CONCLUSIONS = {"neutral", "skipped", "cancelled", "canceled"}
+
+# The bucket keys every counts dict carries, so the frontend never has to guard a
+# missing key and the render order of the card's badges is fixed.
 CHECK_BUCKETS = ("failure", "running", "success", "other")
 
+# The marker itself. ``\s+`` after the name is what keeps the brief sentinel
+# ``<!-- kirocrew-crew-brief v1 -->`` from matching: the next character there is a
+# hyphen, not whitespace. Lazy ``[^>]*?`` stops at the marker's own ``-->`` and
+# cannot run on into later prose.
 CREW_CLAIM_MARKER_RE = re.compile(r"<!--\s*kirocrew-crew\s+([^>]*?)\s*-->")
+
+# ``key=value`` pairs inside the marker; values are whitespace-delimited. Unknown
+# keys are simply not read, so the marker can grow a field without this parser (or
+# an older crew reading a newer marker) breaking.
 CREW_CLAIM_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)=(\S+)")
+
 CREW_CLAIM_ISO_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
 
 
