@@ -36,8 +36,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Optional, Protocol
 
 from .base import BaseConnector
+
+if TYPE_CHECKING:  # type-only; the pure PR-2 surface imports with no connections dep
+    from kiro_crew.connections.control_plane.operation import CredentialMode
 
 # ── entity types ───────────────────────────────────────────────────────────
 # One string per GitHub record kind. Stored verbatim on every row's lineage so a
@@ -574,22 +578,333 @@ def render_row_metadata(row: TypedRow) -> dict:
     }
 
 
+# ── PR-3: the live wiring (real invocation + paging through W01's transport) ─
+# PR-2 above owns the domain model and refuses a live read until a real
+# transport exists. This section drives that transport WITHOUT re-doing any of
+# it: it opens W01's PageWalk (through connections.vendors.github.dispatch) and
+# advances it page by page, so the operation is really invoked, authorized per
+# page, and the per-page cursor really followed. The ONLY sender is W01's
+# transport, composed by the caller and handed in.
+#
+# WHAT IS NOT CLOSED, AND WHY (root-confirmed at cd00f1837): the fetched page
+# BODY does not come back. build_production_transport builds
+# `TransportResponse(http_status=..., result=decode(reply))`, and a ResultDecode
+# returns only an OperationResult ({status, next_cursor}); Decoded2xx does
+# capture `body: bytes` but only `.result` propagates, so the rows are dropped
+# before they reach ExecutionOutcome (which has no payload slot either). W01
+# owns the fix (a single neutral payload slot threaded Decoded2xx.body ->
+# TransportResponse -> ExecutionOutcome, with a schema bump). Until that
+# versioned commit lands, the row-extraction step is left as an EXPLICIT,
+# UNVERIFIED seam that FAILS CLOSED (raises) rather than fabricating rows or
+# claiming a dataset. No workaround is used: no out-of-band body capture, no
+# response cache, no local envelope re-declaration, no vendor side channel.
+
+# The GitHub list operation per entity kind (operation_id only, never a URL, so
+# auth/custody/paging all stay W01's). Only the entities with a REPO-SCOPED REST
+# list op carrying {owner}/{repo} path params are wired here:
+#   * pull requests -> gh_list_pull_requests (GET /repos/{owner}/{repo}/pulls),
+#     converted by issue_or_pull_from_payload;
+#   * commits       -> gh_list_commits       (GET /repos/{owner}/{repo}/commits),
+#     converted by commit_from_payload.
+# TWO entities are deliberately NOT wired, as open questions rather than
+# hand-rolled URLs (a naked path is forbidden):
+#   * issues     -- the repo-scoped issues LIST is not in the vendor table; the
+#     only issue-listing ops are gh_search_issues (GET /search/issues, a `q=`
+#     search shape, no {owner}/{repo} path) and gh_list_issues (GraphQL prose,
+#     unshapeable by the REST locator);
+#   * check-runs -- ENTITY_CHECK_RUN has NO list op at all (only a legacy
+#     branch-protection PATCH).
+# Both remain reported as `question` to the conductor.
+_OP_FOR_ENTITY = {
+    ENTITY_PULL_REQUEST: "gh_list_pull_requests",
+    ENTITY_COMMIT: "gh_list_commits",
+}
+
+# Which PR-2 converter turns one raw GitHub payload item into a typed row, per
+# wired entity. issue_or_pull_from_payload marks a PR from its payload shape, so
+# it is correct for the pull-requests stream.
+_CONVERTER_FOR_ENTITY = {
+    ENTITY_PULL_REQUEST: issue_or_pull_from_payload,
+    ENTITY_COMMIT: commit_from_payload,
+}
+
+
+def _now_iso() -> str:
+    """The read timestamp stamped onto every row's lineage (UTC, ISO 8601)."""
+
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _source_id_of(source: dict) -> str:
+    """The knowledge source id, from whichever key the row carries it under."""
+
+    return str(source.get("id") or source.get("source_id") or "")
+
+
+def _ingest_api_available() -> bool:
+    """True iff chat-408's per-row ingest API is importable on THIS base.
+
+    Checked at call time (not import) because the API — ``knowledge.rows``,
+    ``knowledge.acl`` and ``BaseConnector.supports_rows`` — lives in files this
+    slice does not own and on a different dependency stack (main-based) than this
+    W01-based branch. While it is absent the connector stays on the text path;
+    when it lands on this base every check flips together and the row path drives
+    with no other change. It imports nothing on the False path, so this module
+    loads fine today.
+    """
+
+    try:
+        import kiro_crew.knowledge.acl  # noqa: F401
+        import kiro_crew.knowledge.rows  # noqa: F401
+    except ImportError:
+        return False
+    return hasattr(BaseConnector, "supports_rows")
+
+
+def _resource_ref_for(typed: Any, *, owner: str, ref_cls: Any) -> Any:
+    """Build the GitHub :class:`ProviderResourceRef` locating one typed row.
+
+    The locator shapes are the ones acl.ProviderResourceRef documents for GitHub:
+    issue/pull ``{owner, repo, number}``, commit ``{owner, repo, sha}``. Provider
+    is ``github``; account is the vendor org/login (the repo owner); resource_id
+    is the row's own entity key. This is what the query-time gate resolves to
+    revalidate, so a managed row cannot be stored without it.
+    """
+
+    repo_name = typed.repo_full_name.split("/", 1)[1]
+    if isinstance(typed, IssueOrPullRow):
+        locator = {"owner": owner, "repo": repo_name, "number": typed.number}
+        resource_id = str(typed.number)
+    elif isinstance(typed, CommitRow):
+        locator = {"owner": owner, "repo": repo_name, "sha": typed.sha}
+        resource_id = typed.sha
+    else:  # CheckRunRow and any future kind
+        locator = {"owner": owner, "repo": repo_name, "check_run_id": getattr(typed, "id", "")}
+        resource_id = str(getattr(typed, "id", ""))
+    return ref_cls(
+        provider="github", account=owner, resource_id=resource_id, locator=locator)
+
+
+def _source_row_from(typed: Any, *, owner: str, cls: Any) -> Any:
+    """Map one PR-2 typed row to a chat-408 :class:`SourceRow`, ACL fail-closed.
+
+    ``key`` is the row's stable primary key; ``text`` is its own projection;
+    ``resource_ref`` is the GitHub locator; ``tenant`` is the repo owner
+    (non-empty). ``subjects`` is an EMPTY tuple — explicit deny-all — because
+    this slice has NO authorization evidence mapping a GitHub object to the
+    subjects allowed to see it, and a missing grant must never become public.
+    ``managed`` is fixed True by the DTO. Making a row public would require
+    proving it and passing ``acl.PUBLIC_SUBJECT`` on purpose (an open question).
+    """
+
+    from kiro_crew.knowledge.acl import ProviderResourceRef
+
+    return cls(
+        key=typed.primary_key,
+        text=render_row_text(typed),
+        subjects=(),  # fail-closed: no evidence -> deny-all, never public
+        tenant=owner,  # the vendor org/login; non-empty
+        resource_ref=_resource_ref_for(typed, owner=owner, ref_cls=ProviderResourceRef),
+        title=typed.primary_key,
+        item_type="document",
+    )
+
+
+@dataclass(frozen=True)
+class GithubTransport:
+    """Everything one entity's page walk needs, all resolved by W01 / the caller.
+
+    The connector never builds a handle, selector, vault or transport itself --
+    custody, auth and fencing are W01's, so the caller (the scheduler
+    integration, a test) composes a real
+    :func:`~kiro_crew.connections.vendors.github.dispatch.build_github_transport`
+    plus the W01 handle/gate inputs and hands them in through a
+    :class:`GithubTransportProvider`. ``clock`` is optional (a deterministic
+    test injects one; production leaves it ``None`` so the executor reads its own
+    server clock).
+    """
+
+    transport: Any
+    handle: Any
+    offered_mode: "CredentialMode"
+    permitted: Any
+    layers: Any
+    governance_scope: str
+    governance_item: str
+    clock: Optional[Callable[[], float]] = None
+
+
+class GithubTransportProvider(Protocol):
+    """Resolves a source + entity to a :class:`GithubTransport`, or ``None``.
+
+    The seam that keeps custody out of this module: given the source row and the
+    entity kind about to be walked, an implementation returns the W01-composed
+    transport bundle for that binding (per-binding via W01's
+    ``BindingSecretSelector`` -- one binding, one transport), or ``None`` when it
+    cannot. A ``None`` makes the connector fail closed for that entity rather
+    than fabricate a read.
+    """
+
+    def __call__(
+        self, source: dict, entity_type: str
+    ) -> Optional["GithubTransport"]:  # pragma: no cover - Protocol
+        ...
+
+
+class LiveFetchError(RuntimeError):
+    """A live GitHub read could not complete, so nothing is stored.
+
+    Raised when a page walk's gate denied or the transport failed, when no W01
+    transport is available for a source, or -- until W01's payload slot lands --
+    when a walk turned pages but the row payload cannot be read back. It is a
+    fail-closed refusal: a partial, empty, or page-count-only result is never
+    presented as a complete live read. Distinct from :class:`NotImplementedError`,
+    which is the "no transport configured at all" case PR-2's parked tests
+    assert.
+    """
+
+
+def _repo_of(source: dict) -> str:
+    """The ``owner/name`` this source reads, validated.
+
+    Accepts the spellings ``validate_config`` accepts (``uri`` with an optional
+    ``github://`` prefix) plus the ``repo_full_name`` the refresh tests pass.
+    Refuses anything that is not ``owner/name`` -- a malformed repo must never be
+    shaped into a request.
+    """
+
+    repo = (
+        (source.get("repo_full_name") or source.get("uri") or "")
+        .strip()
+        .removeprefix("github://")
+    )
+    if not _REPO_FULL_NAME_RE.match(repo):
+        raise LineageError(f"source repo must be 'owner/name', got {repo!r}")
+    return repo
+
+
 class GithubStructuredConnector(BaseConnector):
     """Consume GitHub issues/PRs/commits/check-runs as one structured source.
 
     Conforms to :class:`BaseConnector` so the existing ``SyncScheduler`` drives
     it. The typed-row conversion, primary-key diffing and checkpointing are the
-    module-level pure functions above; this class binds them to the connector
-    contract and owns config validation.
+    module-level pure functions above (PR-2); the live invocation + paging is
+    wired through W01's executor/production transport (PR-3) via an injected
+    :class:`GithubTransportProvider`.
 
-    The transport is deliberately absent. :meth:`fetch` and :meth:`detect_changes`
-    refuse until the live executor is wired, because a mock read is not a
-    live read; the pure conversion/diff/checkpoint surface is what is verified on
-    ``main`` today.
+    **Fail-closed without a transport.** Built with no ``transport_provider``
+    (the default), :meth:`fetch` and :meth:`detect_changes` REFUSE with
+    :class:`NotImplementedError` exactly as PR-2 shipped -- a mock read is not a
+    live read.
+
+    **Row payload is a pending W01 seam.** Even WITH a provider, the fetched page
+    body does not yet come back through W01's ``ExecutionOutcome`` (root-confirmed
+    at cd00f1837: only ``OperationResult`` = ``{status, next_cursor}`` propagates;
+    ``Decoded2xx.body`` is dropped). W01 owns adding a neutral payload slot. Until
+    that versioned commit lands, the live path drives a REAL page walk (the
+    operation is invoked, authorized per page, and the per-page cursor followed)
+    but then FAILS CLOSED at row extraction rather than fabricating rows or
+    claiming a dataset. It re-implements no auth, custody, retry, fencing, error
+    class or pagination.
     """
+
+    def __init__(self, transport_provider: Optional[GithubTransportProvider] = None) -> None:
+        self._transport_provider = transport_provider
 
     def source_type(self) -> str:
         return SOURCE_TYPE
+
+    # ── per-row ingest contract (chat-408's SourceRow API), consumed in-slice ──
+    def supports_rows(self) -> bool:
+        """True once the per-row ingest API (SourceRow / ingest_rows) is on this
+        base so :meth:`fetch_rows` can emit real rows with their own ACL grant.
+
+        It is gated on the API actually being importable rather than hard-coded,
+        because that API lives in files this slice does not own (rows.py / acl.py
+        / ingestion.py / store.py / sync.py / the handler, all chat-408's) and on
+        a different dependency stack than this W01-based branch. While the symbols
+        are absent this returns False, so the scheduler keeps to the text path and
+        nothing pretends the row path is wired; when they land on this base it
+        returns True and the real per-row ACL ingest drives. The `fetch_rows`
+        body below is written against the real contract so consuming it is a
+        no-op flip, not new work.
+        """
+
+        return _ingest_api_available()
+
+    async def fetch_rows(self, source: dict):
+        """Fetch the source's rows for the per-row ingest contract.
+
+        Returns ``(rows, snapshot, checkpoint)``:
+
+        * ``rows`` -- one ``kiro_crew.knowledge.rows.SourceRow`` per fetched
+          record, each carrying its own ``key`` (the primary-key identity),
+          ``text`` (the row's own projection), ``resource_ref`` (the GitHub
+          :class:`ProviderResourceRef` locating this object), ``tenant`` (the
+          vendor org/login, non-empty), and ``subjects``.
+        * ``snapshot`` -- **False (incremental)**, chosen deliberately: this
+          source refreshes by a ``since`` watermark, so a round returns only the
+          records that changed after it. Absent rows are NOT gone — they simply
+          did not change — so ``snapshot=True`` (which authorises DELETING absent
+          rows) would destroy live rows every incremental round. A full-snapshot
+          mode would need an unfiltered listing of every entity and is not what a
+          ``since`` refresh produces.
+        * ``checkpoint`` -- the opaque ``next_since`` watermark. The scheduler
+          persists it at ``props['checkpoint']`` and advances it ONLY after the
+          ingest reports every row fully persisted (RowsIngestOutcome
+          .fully_persisted); a half-done batch leaves the old checkpoint, so the
+          next round re-attempts the un-persisted rows.
+
+        **ACL is fail-closed.** ``subjects`` is an EMPTY tuple (explicit
+        deny-all) for every row, because this slice has no authorization evidence
+        that maps a GitHub object to the subjects allowed to see it — a MISSING
+        grant must never become public, and there is no implicit public default.
+        Making a row public would require proving it (e.g. a public-repo signal)
+        and passing ``acl.PUBLIC_SUBJECT`` on purpose; where that evidence comes
+        from is an open question to the conductor. ``tenant`` is the repo owner
+        (non-empty), ``managed`` is fixed True by the DTO.
+        """
+
+        if not _ingest_api_available():
+            raise LiveFetchError(
+                "the per-row ingest API (kiro_crew.knowledge.rows.SourceRow / "
+                "ingestion.ingest_rows) is not on this base yet; it lives in "
+                "chat-408's shared files on a main-based branch and this branch "
+                "is stacked on W01. supports_rows() is False until the two "
+                "converge on this base, so the scheduler stays on the text path "
+                "and no row is fabricated. See the conductor question.")
+        if self._transport_provider is None:
+            raise NotImplementedError(
+                "GitHub row fetch needs a transport provider that composes W01's "
+                "executor/production; none was configured")
+        from kiro_crew.knowledge.rows import SourceRow  # available: see guard
+
+        repo = _repo_of(source)
+        owner, name = repo.split("/", 1)
+        checkpoint = read_checkpoint(source)
+        rows: list = []
+        max_since = checkpoint.since
+        for entity_type in _OP_FOR_ENTITY:
+            bundle = self._transport_provider(source, entity_type)
+            if bundle is None:
+                continue
+            base_args: dict = {"owner": owner, "repo": name}
+            if checkpoint.since:
+                base_args["since"] = checkpoint.since
+            for typed in self._walk_entity_rows(
+                entity_type=entity_type, repo=repo,
+                source_id=_source_id_of(source), bundle=bundle, base_args=base_args,
+            ):
+                rows.append(_source_row_from(typed, owner=owner, cls=SourceRow))
+                stamp = getattr(typed, "updated_at", None) or getattr(
+                    typed, "committed_date", None)
+                if stamp and (max_since is None or stamp > max_since):
+                    max_since = stamp
+        # Incremental (snapshot=False): a since-window carries only changed rows,
+        # so absent rows must NOT be deleted. Checkpoint = the advanced watermark.
+        return rows, False, max_since
 
     def validate_config(self, config: dict) -> tuple[bool, str]:
         # The sources-schema key every connector reads is ``uri`` (as
@@ -602,20 +917,150 @@ class GithubStructuredConnector(BaseConnector):
             return False, f"repo must be 'owner/name', got {repo!r}"
         return True, ""
 
+    def _walk_entity_rows(
+        self, *, entity_type: str, repo: str, source_id: str, bundle: "GithubTransport",
+        base_args: "Mapping[str, Any]",
+    ) -> tuple:
+        """Drive a REAL W01 page walk for one entity and convert its rows.
+
+        Opens a W01 ``PageWalk`` for the entity's operation through the injected
+        transport and pumps it with ``walk_pages`` -- so authorization runs per
+        page and the walk advances on the SINGLE ``next_cursor`` W01 puts on the
+        envelope, never a local re-implementation and never a vendor ``Link``
+        parsed here. Each page's rows are read off ``ExecutionOutcome.payload``
+        (a :class:`CollectionPayload`) -- the ONE neutral data channel -- and
+        handed to PR-2's converter for this kind. A page a gate denied or the
+        transport failed on stops the walk and surfaces the typed error rather
+        than a partial dataset. Reads the payload; never copies or caches it.
+        """
+
+        from kiro_crew.connections.control_plane.result import CollectionPayload
+        from kiro_crew.connections.vendors.github.dispatch import (
+            open_page_walk,
+            walk_pages,
+        )
+
+        converter = _CONVERTER_FOR_ENTITY[entity_type]
+        fetched_at = _now_iso()
+        walk = open_page_walk(
+            operation_id=_OP_FOR_ENTITY[entity_type],
+            handle=bundle.handle,
+            transport=bundle.transport,
+            offered_mode=bundle.offered_mode,
+            permitted=bundle.permitted,
+            layers=bundle.layers,
+            governance_scope=bundle.governance_scope,
+            governance_item=bundle.governance_item,
+            base_args=dict(base_args),
+            clock=bundle.clock,
+        )
+        outcomes = walk_pages(walk)
+        rows: list = []
+        for outcome in outcomes:
+            if not outcome.ok:
+                raise LiveFetchError(
+                    f"github {entity_type} walk stopped: {outcome.error}")
+            payload = outcome.payload
+            if payload is None:
+                continue  # an empty page: no rows, not an error
+            if not isinstance(payload, CollectionPayload):
+                # A list operation must return a collection; anything else is a
+                # shaping fault, not a silently-empty page.
+                raise LiveFetchError(
+                    f"github {entity_type} page returned a non-collection payload "
+                    f"({type(payload).__name__}); refusing to guess rows")
+            for item in payload.items:
+                rows.append(
+                    converter(
+                        repo, dict(item), source_id=source_id, fetched_at=fetched_at))
+        return tuple(rows)
+
     async def detect_changes(self, source: dict) -> bool:
-        # UNVERIFIED until the transport lands: a real detect_changes issues a
-        # conditional/`since` probe against GitHub. It raises here — fail-closed,
-        # scheduling no ingest — rather than fabricating a "changed" answer from
-        # a mock.
-        raise NotImplementedError(
-            "GitHub live change-detection needs the connections transport "
-            "executor, not on main yet")
+        """Real change detection through W01's transport.
+
+        Fail-closed without a transport (:class:`NotImplementedError`) -- a mock
+        cannot answer "changed". With a provider it drives a REAL page walk of the
+        pull-request stream filtered by the checkpoint's ``since`` watermark and
+        reports whether the window returned any rows: a non-empty ``since`` window
+        means at least one record changed after the watermark. The rows come off
+        ``ExecutionOutcome.payload``; the walk advances on W01's single
+        ``next_cursor``. It never fabricates a "changed" answer.
+        """
+
+        if self._transport_provider is None:
+            raise NotImplementedError(
+                "GitHub live change-detection needs a transport provider that "
+                "composes W01's executor/production; none was configured")
+        repo = _repo_of(source)
+        bundle = self._transport_provider(source, ENTITY_PULL_REQUEST)
+        if bundle is None:
+            raise LiveFetchError(
+                "no W01 transport available for this source; cannot detect changes")
+        source_id = _source_id_of(source)
+        checkpoint = read_checkpoint(source)
+        owner, name = repo.split("/", 1)
+        base_args: dict = {"owner": owner, "repo": name}
+        if checkpoint.since:
+            base_args["since"] = checkpoint.since
+        rows = self._walk_entity_rows(
+            entity_type=ENTITY_PULL_REQUEST, repo=repo, source_id=source_id,
+            bundle=bundle, base_args=base_args)
+        return len(rows) > 0
 
     async def fetch(self, source: dict) -> tuple[str, dict]:
-        # UNVERIFIED until the transport lands and pagination is consumed from
-        # connections.vendors.github. Refusing here is deliberate: a
-        # first-page-only or mocked payload is not a live dataset and must not be
-        # stored as one.
-        raise NotImplementedError(
-            "GitHub live fetch needs the connections transport executor and "
-            "connections.vendors.github.pagination; neither is on main yet")
+        """A REAL structured fetch + refresh through W01's transport.
+
+        Fail-closed without a transport (:class:`NotImplementedError`). With a
+        provider it walks each wired entity kind in :data:`_OP_FOR_ENTITY` through
+        W01's transport (the operation is invoked, authorized per page, and the
+        walk advances on W01's single ``next_cursor``), reads the rows off
+        ``ExecutionOutcome.payload``, converts them with PR-2's converters, folds
+        the result through PR-2's ``diff_rows`` (a ``since`` window, so
+        ``disappeared`` stays empty), and renders the upserts into the pipeline's
+        ``(text, metadata)`` shape. Every stored item carries the full lineage
+        domain, so a search hit stays traceable.
+
+        Returns one text blob joining every row's projection and a metadata dict
+        carrying the row count, the next watermark to persist, and the per-row
+        primary keys -- the scheduler chunks and stores it as for any other
+        source.
+        """
+
+        if self._transport_provider is None:
+            raise NotImplementedError(
+                "GitHub live fetch needs a transport provider that composes "
+                "W01's executor/production and consumes vendors.github paging; "
+                "none was configured")
+        repo = _repo_of(source)
+        source_id = _source_id_of(source)
+        checkpoint = read_checkpoint(source)
+        owner, name = repo.split("/", 1)
+        fetched_rows: list = []
+        for entity_type in _OP_FOR_ENTITY:
+            bundle = self._transport_provider(source, entity_type)
+            if bundle is None:
+                continue  # this source does not read this kind
+            base_args: dict = {"owner": owner, "repo": name}
+            if checkpoint.since:
+                base_args["since"] = checkpoint.since
+            fetched_rows.extend(
+                self._walk_entity_rows(
+                    entity_type=entity_type, repo=repo, source_id=source_id,
+                    bundle=bundle, base_args=base_args))
+
+        # A windowed (since) refresh never reports disappearances; a first full
+        # refresh also passes full_listing=False, because a multi-entity walk is
+        # not a single-collection full listing -- retiring is out of scope here.
+        plan = diff_rows(
+            tuple(fetched_rows), frozenset(),
+            prior_since=checkpoint.since, full_listing=False)
+        text = "\n\n".join(render_row_text(row) for row in plan.upserts)
+        metadata = {
+            "source_type": SOURCE_TYPE,
+            "repo_full_name": repo,
+            "row_count": len(plan.upserts),
+            "next_since": plan.next_since,
+            "primary_keys": [row.primary_key for row in plan.upserts],
+            "rows": [render_row_metadata(row) for row in plan.upserts],
+        }
+        return text, metadata

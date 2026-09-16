@@ -459,26 +459,92 @@ the scheduler side (today `sync.py` does a single `fetch()` → whole-source
 replace) is the registration/wiring follow-up below, tracked as the conductor's
 decision — not invented here.
 
-**UNVERIFIED, deliberately parked.** `fetch` and `detect_changes` raise
-`NotImplementedError`: a live read needs the connections transport executor,
-which is not on `main` yet, so there is no live path to exercise and none is
-faked. When multi-page extraction is added it consumes the stabilized
-`connections.vendors.github` pagination as a normal dependency rather than
-growing a second copy of paging. Refusing is fail-closed — a first-page-only or
-mocked payload is not a live dataset and is never stored as one. The typed rows,
-keys, conversion, incremental diff, checkpoint, lineage and registration are the
-surface this change verifies (in the pull request that adds it, not yet on
-`main`).
+**Live path wired through W01's transport, and the row payload now closes it.**
+Given a `GithubTransportProvider` (the caller composes a real W01
+`build_github_transport` — per-binding custody via `BindingSecretSelector`, no
+credential seen here — and the executor's handle/gate inputs), `fetch` and
+`detect_changes` drive a REAL W01 `PageWalk` for each wired repo-scoped entity
+through `connections.vendors.github.dispatch`: the operation is invoked,
+authorized per page, and the walk advances on W01's SINGLE
+`OperationResult.next_cursor` (never a vendor `Link` re-parsed downstream). The
+fetched rows come back on `ExecutionOutcome.payload` — a `CollectionPayload`, the
+one neutral data channel W01 added at `RESULT_SCHEMA_VERSION=3` /
+`EXECUTOR_SCHEMA_VERSION=4` / `PRODUCTION_SCHEMA_VERSION=3` — and the connector
+runs PR-2's converters over `payload.items`, folds them through PR-2's `diff_rows`
+(a `since` window, so `disappeared` stays empty), and renders the upserts into
+the pipeline's `(text, metadata)` shape. `detect_changes` reports changed iff the
+`since` window returned rows. Nothing is copied, cached, or re-declared: the rows
+are read off the single `ExecutionOutcome.payload` and the cursor off the single
+`next_cursor`.
+
+The cursor is driven off `next_cursor` alone. GitHub REST list endpoints carry
+their next-page position only in the `Link` response header, so the vendor
+*decoder* reads `Link` — where it already decodes the reply — and turns it into
+that single `next_cursor`; the cursor is then single and authoritative on the
+envelope and nothing downstream re-parses `Link` (`ExecutionOutcome.metadata` is
+a rate-limit-only allowlist that never carries it). This is the established
+interface, read once into the one place a cursor lives.
+
+The wired kinds are pull requests (`gh_list_pull_requests`) and commits
+(`gh_list_commits`), both repo-scoped REST list operations with real path
+templates. **Issues** (repo-scoped list) and **check-runs** (list) are the
+authorized scope addition but their vendor descriptors live in the shared 45-op
+`descriptors.py` (owned by the W02 vendor-data slice), so the exact rows are
+reported to the conductor for coordination rather than written here.
+
+Built with **no** transport provider (the default), `fetch` / `detect_changes`
+still refuse with `NotImplementedError` exactly as PR-2 shipped — a mock read is
+not a live read.
+
+**Per-row ingest (`supports_rows` / `fetch_rows`).** The connector implements the
+per-row ingest contract so the real `SyncScheduler` drives the per-row ACL path,
+not just a text blob. `fetch_rows(source)` walks each wired entity through W01's
+transport, reads the rows off `ExecutionOutcome.payload`, and returns
+`(rows, snapshot, checkpoint)`:
+
+- each `row` is a `knowledge.rows.SourceRow` carrying its own `key` (the
+  primary-key identity), `text` (the row's projection), `resource_ref` (the
+  GitHub `ProviderResourceRef` — `provider="github"`, `account=owner`, and the
+  documented locator: `{owner, repo, number}` for an issue/PR, `{owner, repo,
+  sha}` for a commit), and `tenant` (the repo owner, non-empty);
+- **`subjects` is an EMPTY tuple — explicit deny-all — for every row**, because
+  this slice has no authorization evidence mapping a GitHub object to the
+  subjects allowed to see it. A missing grant must never become public; there is
+  no implicit public default. Making a row public would require proving it and
+  passing `acl.PUBLIC_SUBJECT` on purpose — where that evidence comes from is an
+  open question to the conductor. `managed` is fixed True by the DTO;
+- **`snapshot=False` (incremental), deliberately**: the source refreshes by a
+  `since` watermark, so a round returns only changed rows. Absent rows are not
+  gone — they simply did not change — so `snapshot=True` (which authorises
+  DELETING absent rows) would destroy live rows every incremental round;
+- `checkpoint` is the opaque advanced `since` watermark. The scheduler persists
+  it at `props['checkpoint']` and advances it ONLY after the ingest reports every
+  row fully persisted (`RowsIngestOutcome.fully_persisted`); a half-done batch
+  leaves the old checkpoint so the next round re-attempts the un-persisted rows.
+
+**Pending-API integration.** `supports_rows()` is gated on the ingest API
+(`knowledge.rows` / `knowledge.acl` / `BaseConnector.supports_rows`) being
+importable on this base, NOT hard-coded True. That API lives in files this slice
+does not own (`rows.py`, `acl.py`, `ingestion.py`, `store.py`, `sync.py`, the
+handler — chat-408's) and on a main-based branch (PR #11219), while this branch is
+stacked on W01 (PR #11286). The two do not share a base, and this slice may not
+add or edit those shared files, so until they converge on one base
+`supports_rows()` returns False (the scheduler keeps to the text path, nothing is
+faked) and `fetch_rows` raises a clear pending-API `LiveFetchError`. The
+`fetch_rows` body is written against the real contract and verified against
+faithful stand-ins, so consuming the real API in-slice is a no-op flip. How the
+W01-stacked branch and the main-based ingest branch converge for this consumer is
+reported to the conductor.
 
 **Registration.** The core connector map is assembled by hand in
 `dashboard/handlers/knowledge.py`; `connectors["github"] =
 GithubStructuredConnector()` is set alongside `local_folder` / `obsidian_vault`,
 **before** the `platform.interfaces.KnowledgeProvider.extra_connectors` edition
 merge, so an edition can still override `github` (built-ins first, edition on
-top). Mapping the `source_type` does **not** make the source syncable: `fetch` /
-`detect_changes` still refuse without a transport, so a sync attempt is refused,
-never silently faked. The wiring is one import plus one map entry; nothing else
-in that handler changes.
+top). Mapping the `source_type` does **not** make the source syncable without a
+transport provider wired in; that wiring (the provider that composes W01's
+per-binding transport) is the scheduler-integration follow-up. The connector
+wiring is one import plus one map entry; nothing else in that handler changes.
 
 ## 3. LLMPool workers (`llm_pool.py`)
 
